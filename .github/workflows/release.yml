@@ -1,0 +1,61 @@
+name: Prepare release artifacts
+
+# Preparation only. Creating tags, uploading release assets and publishing a
+# GitHub Release remain separate, explicitly authorized maintainer operations.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing stable release tag (first release v0.1.0)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  macos-arm64:
+    if: github.repository == 'matthewmorek/gitbuddy'
+    runs-on: macos-15
+    timeout-minutes: 15
+    env:
+      RELEASE_TAG: ${{ inputs.tag }}
+    steps:
+      - name: Validate stable tag input
+        shell: bash
+        run: '[[ "$RELEASE_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]'
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.4
+      - name: Check repository, architecture, tag and manifest agree
+        shell: bash
+        run: |
+          test "$(uname -m)" = arm64
+          test "$(git remote get-url origin)" = https://github.com/matthewmorek/gitbuddy
+          test "$(git rev-parse HEAD)" = "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")"
+          test "$RELEASE_TAG" = "v$(bun -e 'console.log(require("./package.json").version)')"
+      - run: bun install --frozen-lockfile
+      - run: bun run typecheck
+      - run: bun test
+      - run: bash -n scripts/install.sh
+      - run: python3 scripts/smoke-terminal.py
+      - run: bun run build --release
+      - name: Execute standalone binary without Bun or Node
+        shell: bash
+        run: python3 scripts/smoke-terminal.py --binary "dist/gitbuddy-${RELEASE_TAG#v}-darwin-arm64"
+      - name: Check asset checksums
+        working-directory: dist
+        run: shasum -a 256 -c SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gitbuddy-${{ inputs.tag }}-darwin-arm64
+          path: |
+            dist/gitbuddy-*-darwin-arm64
+            dist/SHA256SUMS
+            dist/THIRD_PARTY_NOTICES.txt
+            dist/install.sh
+          if-no-files-found: error
