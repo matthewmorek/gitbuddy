@@ -1,86 +1,96 @@
 # Gitbuddy
 
-A keyboard-first Git history browser with an OpenCode-style **Ctrl+P** command palette, commit details, periodic fetching and explicit pull modes. Built with Go, Bubble Tea v2, Lip Gloss and Bubbles. Git is the source of truth; `gh` is not required.
+A keyboard-first Git history browser for your terminal.
 
-Release candidate: **0.1.1**. Preparing this candidate does not publish a release.
+Browse commits, read their messages and changed filenames, and fetch or pull
+without leaving the terminal. **Ctrl+P** puts commands and settings in one place.
 
-## Development
+- History and commit details side by side, with a single-pane layout on smaller terminals.
+- Current-branch or all-branch history, periodic fetching, and explicit pull modes.
+- OpenCode, Tokyo Night and Catppuccin palettes in light, dark or system mode.
 
-Gitbuddy's original code is [MIT-licensed](LICENSE). Bundled components keep their
-own licenses. See [licensing](docs/LICENSING.md) for the embedded notice inventory.
+[Install](#install) · [Use](#use) · [Update](#update) · [Uninstall](#uninstall) ·
+[Contribute](#contribute) · [Releases](https://github.com/matthewmorek/gitbuddy/releases)
 
-Requires macOS, Git, and Go 1.26.7 or newer. The Go toolchain may download the
-version required by `go.mod` when automatic toolchain selection is enabled.
-From this checkout:
+## Why Gitbuddy?
+
+Gitbuddy fills the space between `git log` and a full Git GUI: a focused way to
+understand a repository's history and keep it current, using the keyboard.
+It takes inspiration from Tower's focused Git workflows and OpenCode's spacious
+terminal interface.
+
+It is deliberately not an all-in-one Git client. Keep using your preferred tools
+for staging, committing, pushing and resolving conflicts. Git remains the source
+of truth; Gitbuddy adds a view over it.
+
+## Install
+
+**Requirements:** macOS on Apple Silicon (`arm64`), an interactive terminal, and
+an installed, working Git. Intel Macs, Linux and Windows are not supported yet.
+The downloaded app needs no Go, Python, Bun, Node or GitHub CLI.
+
+> **Early prerelease:** the macOS binary is unsigned and not notarized. Gatekeeper
+> may block it; downloaded-install testing is still pending. Do not disable
+> Gatekeeper or remove quarantine to make it run. Report a blocked installation
+> [as an issue](https://github.com/matthewmorek/gitbuddy/issues).
+
+### Install the current prerelease
+
+The [0.1.1-beta release](https://github.com/matthewmorek/gitbuddy/releases/tag/v0.1.1)
+uses tag `v0.1.1` and executable version `0.1.1`; `-beta` is its display title.
+Prereleases need an explicit version pin.
+
+Download the installer to a file—do not pipe a network response into a shell:
 
 ```sh
-go run ./cmd/gitbuddy /path/to/repository
-go test ./...
-go vet ./...
-# Build/release tests and terminal checks use Python 3, without third-party packages:
-python3 -m unittest discover -s scripts
-python3 scripts/smoke-terminal.py
+curl -q --proto '=https' --proto-redir '=https' --tlsv1.2 -fL \
+  https://github.com/matthewmorek/gitbuddy/releases/download/v0.1.1/install.sh \
+  -o install-gitbuddy.sh
 ```
 
-Omit the path to open the current repository. Subdirectories are accepted. Run in an interactive terminal; `--help`, `--version` and `--licenses` also work without one.
-
-## Standalone build and delivery
-
-On macOS arm64, `python3 scripts/build.py --release` produces
-`dist/gitbuddy-0.1.1-darwin-arm64`, embedded themes/notices and SHA-256 checksums.
-The executable needs Git but not Go, Bun or Node. Check it outside the source directory with:
+If the download fails, stop. Inspect the file first, for example with
+`less install-gitbuddy.sh`. Then install:
 
 ```sh
-python3 scripts/smoke-terminal.py --binary dist/gitbuddy-0.1.1-darwin-arm64
-python3 scripts/check-release.py v0.1.1
+bash install-gitbuddy.sh --version 0.1.1
+"$HOME/.local/bin/gitbuddy" --version
 ```
 
-The shell installer/updater targets `matthewmorek/gitbuddy` releases, installs to
-`~/.local/bin` without sudo or profile edits, and supports explicit version pins
-for rollback. Download URLs become usable only after release publication.
-The first release is deliberately **unsigned and not notarized**; macOS may block
-execution. An actual downloaded-install check remains a publication prerequisite;
-local execution does not establish Gatekeeper acceptance. See
-[release preparation and installation](docs/RELEASING.md) for exact commands,
-failure guarantees and the **tag → verified draft → publish** flow. A new version
-tag triggers verification and a draft, never automatic publication. Branch pushes
-do not start releases. The first release requires a public-prerelease download
-and Gatekeeper trial before stable promotion.
+The installer verifies the binary's SHA-256 checksum and version before replacing
+it. It installs to `~/.local/bin/gitbuddy`, without `sudo`, shell-profile edits or
+changes to your preferences. Checksums detect corruption, not a compromised
+release host.
 
-## Application updates
+If `gitbuddy` is not on your `PATH`, add it for the current terminal:
 
-After the first screen renders, Gitbuddy checks GitHub once per launch for a
-newer **stable** release. The check runs in the background, never installs
-automatically, and does not take focus or replace Git's operation status.
-Offline failures during this automatic check are quiet.
+```sh
+export PATH="$HOME/.local/bin:$PATH"
+```
 
-Use **Ctrl+P → Check for updates** to check manually, including after reconnecting.
-A newer version appears in the footer. **Ctrl+P → Install update** asks for
-confirmation, downloads the pinned binary and checksum manifest, verifies them,
-and safely replaces an eligible user-owned installation. Settings are preserved.
-Installation waits until no Git mutation is running; new fetches/pulls are blocked
-while installing. Ordinary quit cancels the update download and waits for any
-in-progress replacement and Git operation to settle.
+To keep that setting, add the same line to your shell configuration, such as
+`~/.zshrc` for zsh. For another destination, pass an absolute
+`--install-dir`, then add that directory to `PATH` instead. See
+`bash install-gitbuddy.sh --help` for the installer options.
 
-After installation, choose **Ctrl+P → Restart**, or continue working and use the
-new version next time. Restart is never automatic: the terminal is restored and
-active Git operations finish before the process is replaced. Manual check/install
-errors are available through **Show errors and warnings**.
+### Install a stable release
 
-Only release-built macOS arm64 executables installed as `gitbuddy` in a safe
-user-owned directory can replace themselves. Development builds, symlinked paths,
-and unsafe ownership/permissions require manual updating.
-Use the shell installer for explicit version pins or rollback. Checksums detect
-corruption, not a compromised release host; updating does not sign/notarize a
-binary, remove quarantine, or bypass macOS security.
+Once a stable release is available, download and inspect its
+[installer](https://github.com/matthewmorek/gitbuddy/releases/latest/download/install.sh),
+save it as `install-gitbuddy.sh`, then run `bash install-gitbuddy.sh` without
+`--version`. This selects the latest stable release. Drafts cannot be downloaded;
+prereleases are excluded from “latest”.
 
-Set `GITBUDDY_NO_UPDATE_CHECK=1` to disable the automatic check (for example in an
-offline environment). The manual palette command remains available. This does
-not change the independent **automatic Git fetch** setting or stored preferences.
-Update discovery requires a published stable release; a tag, draft or prerelease
-does not produce an update notification.
+## Use
 
-## Keyboard
+Run from a Git repository, or give Gitbuddy its path:
+
+```sh
+gitbuddy
+gitbuddy /path/to/your/repository
+```
+
+Repository subdirectories also work. Start with **Ctrl+P** to explore commands
+and settings.
 
 | Key | Action |
 | --- | --- |
@@ -94,70 +104,85 @@ does not produce an update notification.
 | q | Quit outside text input |
 | Ctrl+C | Close a dialog; otherwise request orderly quit |
 
-History defaults to local branches, remote-tracking branches, tags and HEAD, excluding stash/reflog entries. Use the palette to switch to **Current branch**. There is no branch graph. The selected commit's full message, metadata, parents and changed filenames appear alongside the list. Merge files are compared with the **first parent**; root commits list added files. Full patches are outside this version's scope.
+Automatic fetching starts after local history renders and repeats **every five
+minutes** by default. Disable it or change the interval in **Ctrl+P → Settings**.
+Pulling always requires choosing an explicit command.
 
-Below 100 terminal columns, history and details share one pane. Selection is retained across refreshes, including when a selected commit leaves the loaded history. Navigate again to select a visible commit. **Maximum commits** defaults to **100** and caps the total loaded history, not each page. Change it through Ctrl+P → Maximum commits; changes apply immediately, retaining selected details even when the new limit excludes that commit. Larger limits load in pages of up to 200 commits; only visible list rows are rendered. Each paging generation uses frozen commit tips so a fetch cannot shift subsequent pages.
+See the [user guide](docs/USAGE.md) for history limits, pull safety, preferences,
+custom themes and update behavior.
 
-The design follows Tower's focused Git workflows and OpenCode V2's spacious, keyboard-first presentation: show only the information needed for the current task. The Go interface uses Bubbles components where they simplify the interaction, without carrying a second UI runtime.
+## Update
 
-Panels and dialogs are borderless, with one cell of horizontal and vertical padding, including around the terminal edges. Header and footer content have an additional cell of horizontal inset; the hotkey bar uses a faint theme surface. The active pane uses the darker theme surface and a bold heading. A blank row separates the History heading from the list. Selected history rows have a continuous, theme-accent left-edge bar across both lines. Palette options occupy one line with a full-row highlight, an accent edge and muted, right-aligned categories; the selected action's unavailable reason appears below the options. Open dialogs apply a faint, theme-aware backdrop without dimming their own content.
+Gitbuddy checks for a newer **stable** release in the background after startup.
+It never installs an update or restarts without your choice.
 
-Loading history, additional pages, fetching and pulling show a Bubbles spinner beside the current action in the footer. Selecting a commit reads its details locally; it does not fetch from remotes or replace the footer status. Only detail reads lasting over 150 ms show a spinner, inside the details pane, so quick navigation stays quiet. The footer retains operation/fetch status and actionable errors, not commit counts, the configured limit or the auto-fetch interval; preferences remain available in settings.
+1. Open **Ctrl+P → Check for updates** to check manually.
+2. Choose **Install update** and confirm when a newer version is available.
+3. Choose **Restart** when ready, or use the new version on your next launch.
 
-## Fetch and pull safety
+Prereleases do not appear in these checks. To install a particular published
+version—including an intentional rollback—use the inspected shell installer with
+`--version X.Y.Z`. Once stable releases exist, rerunning it without a pin updates
+to the latest stable version:
 
-Automatic fetching defaults to **every five minutes while Gitbuddy is open**, with an initial fetch after local history renders. Disable it or change the interval in Ctrl+P → Settings. Fetch failures remain visible; use **Status: Show errors and warnings** for the complete message. The last successful fetch time is not advanced on failure. Manual refresh reads local state without fetching.
-
-Fetch uses the repository's existing remotes and branch mappings. `--all` means eligible remotes—not necessarily all branches in a single-branch clone. Gitbuddy warns about restricted mappings but does not rewrite them, prune refs or intentionally update local branches. Existing Git credentials and SSH configuration remain yours; background operations must not wait for interactive login. Authenticate outside the TUI when necessary. Treat repositories and their configured hooks/helpers as trusted, just as when running Git yourself.
-
-The palette offers explicit pull policies:
-
-- **Fast-forward only (default):** refuse divergent history.
-- **Merge:** fast-forward when possible; otherwise merge.
-- **Rebase:** replay local commits on the upstream, changing their commit IDs.
-
-Pull requires an attached branch, an upstream, a clean index/worktree **including untracked files**, and no conflicting Git operation already underway. This is intentionally stricter than some direct Git invocations. Gitbuddy does not stash, reset, abort, resolve conflicts or create/switch branches. It offers no staging, manual-commit or push actions; pull may create merge commits or replay commits as its selected mode requires. If integration conflicts, resolve it externally, then refresh.
-
-App-initiated fetches and pulls are serialized; timer ticks do not accumulate queued jobs. Normal quit waits for an active mutation rather than killing a pull. Another Git client can still change the repository: the preflight is not a lock. Git owns its repository locks. Forced termination does not trigger an automatic rollback or lock deletion.
-
-## Preferences and themes
-
-Preferences live in `$XDG_CONFIG_HOME/gitbuddy/config.json`, or `~/.config/gitbuddy/config.json` when XDG_CONFIG_HOME is unset:
-
-```json
-{
-  "autoFetch": true,
-  "fetchIntervalMinutes": 5,
-  "maxCommits": 100,
-  "theme": "opencode",
-  "colorMode": "system"
-}
+```sh
+bash install-gitbuddy.sh
 ```
 
-The interval accepts whole minutes from 1 to 1440. `maxCommits` accepts positive safe integers; older configuration without this field uses 100. Color mode is `system`, `light` or `dark`; system follows terminal reporting, with dark as the fallback. Changes apply to the running app and are saved atomically. Invalid or externally modified configuration produces a warning rather than silently overwriting your file; repair it externally and restart.
+Settings are preserved. Source builds, symlinked executables and installations
+with unsafe permissions cannot self-update; use the shell installer in a safe,
+user-owned directory. Set `GITBUDDY_NO_UPDATE_CHECK=1` to disable the automatic app
+check; manual checking and automatic Git fetching remain separate.
 
-Bundled palettes: OpenCode, Tokyo Night and Catppuccin, in dark and light modes.
-Existing Gitbuddy settings keep working. Custom themes go in the **Gitbuddy**
-config directory's `themes/*.json`; the filename without `.json` is the theme name.
-The Go version uses a deliberately smaller format instead of embedding OpenCode's
-TypeScript theme engine. Full OpenCode theme documents need conversion; unsupported
-files produce a warning and are never rewritten. Gitbuddy never reads OpenCode preferences.
+## Uninstall
 
-```json
-{
-  "dark": {
-    "background": "#0a0a0a", "panel": "#141414", "active": "#0a0a0a",
-    "selection": "#1e1e1e", "text": "#eeeeee", "muted": "#808080", "accent": "#9d7cd8"
-  }
-}
+Quit Gitbuddy, then remove the executable from the default installation:
+
+```sh
+rm -- "$HOME/.local/bin/gitbuddy"
 ```
 
-Supply at least one complete `dark` or `light` mode; a missing mode uses the other.
-All seven colors must be `#RRGGBB`, and `active` must be darker than `panel`.
-See [third-party notices](THIRD_PARTY_NOTICES.md) for palette provenance.
+If you used `--install-dir`, remove only the `gitbuddy` executable there instead.
+Your repositories are unaffected. Preferences and custom themes are kept in
+`${XDG_CONFIG_HOME:-$HOME/.config}/gitbuddy`; optionally back them up and remove
+that folder manually if you want to forget your settings too.
 
-## Scope and verification
+## Contribute
 
-One repository per process. No daemon, filesystem watcher, PR/check integration, staging, graph or patch viewer. Refresh after changes made by other tools. macOS is the initial target; an architecture is not supported merely because a cross-compile succeeds.
+[Report a bug or suggest an improvement](https://github.com/matthewmorek/gitbuddy/issues).
+For a bug, include your Gitbuddy version, macOS version/architecture and a minimal
+reproduction without private repository data. Discuss larger changes in an issue
+before implementing them.
 
-Tests cover real temporary Git repositories/local remotes, asynchronous message ordering and selection, configuration integrity, themes and Bubble Tea keyboard interactions. They do not require GitHub credentials. Live terminal appearance, assistive technology, Gatekeeper and release delivery must be evaluated separately; automated rendering does not establish those guarantees.
+For code changes, fork the repository and clone your fork. From the checkout,
+with **Go 1.26.7 or newer**, Git and Python 3:
+
+```sh
+go run ./cmd/gitbuddy /path/to/your/repository
+go test ./...
+go test -race ./...
+go vet ./...
+python3 -m unittest discover -s scripts
+python3 scripts/smoke-terminal.py
+```
+
+Go may download the toolchain required by `go.mod`. Python is currently used for
+build/release tooling and its tests, not the application's Go unit tests.
+[Moving that tooling to Go is tracked separately](https://github.com/matthewmorek/gitbuddy/issues/1).
+Development builds cannot replace themselves through the updater.
+
+Keep changes focused, add regression coverage for behavior changes, and open a
+pull request explaining what changed, why, and which checks you ran. For
+documentation-only changes, check links, examples and formatting; no version bump
+or release is needed.
+
+See [release preparation](docs/RELEASING.md) for standalone builds, packaging and
+the manual publication process. Public install, Gatekeeper, accessibility and
+real installed-update tests are separate from automated test coverage.
+
+## License and acknowledgments
+
+Gitbuddy is [MIT-licensed](LICENSE), built with Go, Bubble Tea, Lip Gloss and
+Bubbles. Bundled components retain their own licenses.
+See [third-party notices](THIRD_PARTY_NOTICES.md), the
+[licensing guide](docs/LICENSING.md), or run `gitbuddy --licenses`.
