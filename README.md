@@ -38,28 +38,19 @@ The downloaded app needs no Go, Python, Bun, Node or GitHub CLI.
 
 The [0.1.1-beta release](https://github.com/matthewmorek/gitbuddy/releases/tag/v0.1.1)
 uses tag `v0.1.1` and executable version `0.1.1`; `-beta` is its display title.
-Prereleases need an explicit version pin.
-
-Download the installer to a file—do not pipe a network response into a shell:
+Install it in one command:
 
 ```sh
-curl -q --proto '=https' --proto-redir '=https' --tlsv1.2 -fL \
-  https://github.com/matthewmorek/gitbuddy/releases/download/v0.1.1/install.sh \
-  -o install-gitbuddy.sh
+curl -fsSL https://matthewmorek.github.io/gitbuddy/install.sh | sh -s -- --version 0.1.1
 ```
 
-If the download fails, stop. Inspect the file first, for example with
-`less install-gitbuddy.sh`. Then install:
+The installer shows download, verification and installation progress, then tells
+you how to launch Gitbuddy. It runs without prompts. `--version 0.1.1` explicitly
+selects the current prerelease; it is not treated as a stable release.
 
-```sh
-bash install-gitbuddy.sh --version 0.1.1
-"$HOME/.local/bin/gitbuddy" --version
-```
-
-The installer verifies the binary's SHA-256 checksum and version before replacing
-it. It installs to `~/.local/bin/gitbuddy`, without `sudo`, shell-profile edits or
-changes to your preferences. Checksums detect corruption, not a compromised
-release host.
+It installs to `~/.local/bin/gitbuddy`, verifying the binary's SHA-256 checksum
+and version before replacement. No `sudo`, shell-profile edits or preference
+changes. macOS supplies the shell tools; no package manager is needed.
 
 If `gitbuddy` is not on your `PATH`, add it for the current terminal:
 
@@ -70,15 +61,42 @@ export PATH="$HOME/.local/bin:$PATH"
 To keep that setting, add the same line to your shell configuration, such as
 `~/.zshrc` for zsh. For another destination, pass an absolute
 `--install-dir`, then add that directory to `PATH` instead. See
-`bash install-gitbuddy.sh --help` for the installer options.
+`sh install-gitbuddy.sh --help` for the installer options in the inspection
+alternative below. Flags in a pipe go after `sh -s --`, for example:
+
+```sh
+curl -fsSL https://matthewmorek.github.io/gitbuddy/install.sh | sh -s -- --version 0.1.1 --install-dir "$HOME/bin"
+```
 
 ### Install a stable release
 
-Once a stable release is available, download and inspect its
-[installer](https://github.com/matthewmorek/gitbuddy/releases/latest/download/install.sh),
-save it as `install-gitbuddy.sh`, then run `bash install-gitbuddy.sh` without
-`--version`. This selects the latest stable release. Drafts cannot be downloaded;
+Once a stable release is available, omit the version pin:
+
+```sh
+curl -fsSL https://matthewmorek.github.io/gitbuddy/install.sh | sh
+```
+
+This selects the latest **stable** release and refuses an implicit downgrade.
+Until then, use the pinned prerelease command above. Drafts cannot be downloaded;
 prereleases are excluded from “latest”.
+
+### Prefer to inspect the script?
+
+Piping to a shell executes code from the installer host. Only use a source you
+trust. Binary checksums detect corruption, not a compromised script or release
+host; the pipeline also cannot reliably report a failed `curl` in every shell.
+To check the download result and inspect the script before running it:
+
+```sh
+curl -fsSL https://matthewmorek.github.io/gitbuddy/install.sh -o install-gitbuddy.sh
+# Stop if curl fails. Read the file before running the next command.
+less install-gitbuddy.sh
+sh install-gitbuddy.sh --version 0.1.1
+```
+
+The [versioned release installer](https://github.com/matthewmorek/gitbuddy/releases/download/v0.1.1/install.sh)
+is also available for reproducible, pinned use; the original `0.1.1` script must
+be saved to a file and run with `bash`, not streamed into `sh`.
 
 ## Use
 
@@ -121,12 +139,12 @@ It never installs an update or restarts without your choice.
 3. Choose **Restart** when ready, or use the new version on your next launch.
 
 Prereleases do not appear in these checks. To install a particular published
-version—including an intentional rollback—use the inspected shell installer with
-`--version X.Y.Z`. Once stable releases exist, rerunning it without a pin updates
+version—including an intentional rollback—use the installer with
+`sh -s -- --version X.Y.Z`. Once stable releases exist, rerunning it without a pin updates
 to the latest stable version:
 
 ```sh
-bash install-gitbuddy.sh
+curl -fsSL https://matthewmorek.github.io/gitbuddy/install.sh | sh
 ```
 
 Settings are preserved. Source builds, symlinked executables and installations

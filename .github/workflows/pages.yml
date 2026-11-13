@@ -1,0 +1,73 @@
+name: Publish installer
+
+# Pages serves the current installer; application releases remain tag-driven.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'scripts/install.sh'
+      - 'scripts/test_install.py'
+      - 'scripts/test_workflow.py'
+      - '.github/workflows/pages.yml'
+  pull_request:
+    paths:
+      - 'scripts/install.sh'
+      - 'scripts/test_install.py'
+      - 'scripts/test_workflow.py'
+      - '.github/workflows/pages.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: installer-pages-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    runs-on: macos-15
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify installer
+        run: |
+          sh -n scripts/install.sh
+          bash -n scripts/install.sh
+          python3 scripts/test_install.py -v
+          python3 scripts/test_workflow.py -v
+      - name: Package public installer
+        run: |
+          mkdir _site
+          cp scripts/install.sh _site/install.sh
+          printf '%s\n' \
+            '<!doctype html><html lang="en"><meta charset="utf-8">' \
+            '<meta name="viewport" content="width=device-width, initial-scale=1">' \
+            '<title>Install Gitbuddy</title>' \
+            '<h1>Install Gitbuddy</h1>' \
+            '<p>See the <a href="https://github.com/matthewmorek/gitbuddy#install">installation instructions</a> for requirements and the current release.</p>' \
+            '<p><a href="install.sh">Download or inspect the installer</a>.</p></html>' \
+            > _site/index.html
+          cmp scripts/install.sh _site/install.sh
+      - uses: actions/upload-pages-artifact@v4
+        with:
+          path: _site
+
+  deploy:
+    if: github.repository == 'matthewmorek/gitbuddy' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    needs: package
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      # Enable Pages with GitHub Actions as its source before the first deployment.
+      - name: Deploy installer
+        id: deployment
+        uses: actions/deploy-pages@v4

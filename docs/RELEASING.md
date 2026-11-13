@@ -8,6 +8,41 @@ promotion. The installer targets
 rerun. Users need Git, not Go, Bun or Node. Branch pushes do not start releases,
 and the workflow never publishes a draft or updates installed copies.
 
+## Public installer endpoint
+
+The user-facing entrypoint is
+`https://matthewmorek.github.io/gitbuddy/install.sh`. GitHub Pages serves the
+current `scripts/install.sh` from **main**, independently of immutable application
+release assets. No version manifest, custom update service, package manager or
+second downloaded bootstrap script is needed.
+
+The small `sh` entrypoint follows the function-definitions-first, final-call
+pattern used by [rustup](https://github.com/rust-lang/rustup/blob/cdba254727319c07d6485f6fe10f3f4642e98885/rustup-init.sh)
+and [uv](https://docs.astral.sh/uv/reference/installer/).
+It hands the buffered implementation to macOS's built-in Bash, retaining the
+existing safe-replacement checks instead of rewriting them for another shell.
+Newline-delimited stages work in pipes and logs; a suitable terminal gets color.
+`NO_COLOR` or `TERM=dumb` disables color. No full-screen UI, background spinner,
+interactive prompt or shell-profile edit is involved.
+
+The **Publish installer** workflow verifies the installer on macOS and packages
+only `install.sh` and a small `index.html`. Pull requests can verify/package but
+cannot deploy. Only successful verification on this repository's **main** can
+deploy, with separate `pages: write` and `id-token: write` permissions in the
+`github-pages` environment. Branch pushes still never create application releases.
+
+Before the first deployment, a maintainer must explicitly enable **Settings →
+Pages → Build and deployment → Source: GitHub Actions**. The workflow does not
+enable Pages or change repository settings itself. Confirm the HTTPS endpoint
+returns the exact tested script after deployment. An offline package check is
+not proof that Pages has been enabled or the URL works.
+
+Piping an installer executes remote code. The end-of-file call limits accidental
+execution of an incomplete body, but does not authenticate it or prove the
+HTTP transfer succeeded. Ordinary pipeline status may conceal a failed download.
+Keep the README's download/inspect/run alternative. Checksums fetched from the
+same host do not protect against compromised distribution.
+
 ## First release policy
 
 - Candidate version: `0.1.1`, tag `v0.1.1`, draft title `0.1.1-beta`.
@@ -147,14 +182,23 @@ than automatically replacing assets, republishing or discarding the previous rel
 
 ## Install, update and rollback
 
-Once a stable release exists, download and inspect its installer:
+For the current public prerelease:
 
 ```sh
-curl -q --proto '=https' --proto-redir '=https' --tlsv1.2 -fL \
-  https://github.com/matthewmorek/gitbuddy/releases/latest/download/install.sh \
-  -o install-gitbuddy.sh
-bash install-gitbuddy.sh
+curl -fsSL https://matthewmorek.github.io/gitbuddy/install.sh | sh -s -- --version 0.1.1
 ```
+
+Once a stable release exists:
+
+```sh
+curl -fsSL https://matthewmorek.github.io/gitbuddy/install.sh | sh
+```
+
+For inspection first, download the Pages script to `install-gitbuddy.sh`, stop on
+download failure, read it and run `sh install-gitbuddy.sh` with the same flags.
+Versioned release installers remain unchanged; older Bash-only installers must
+be saved and run using Bash. Publishing the Pages script does not replace any
+release asset or change its checksum.
 
 Rerun to update. Default destination is `~/.local/bin/gitbuddy`; the installer makes
 no sudo, profile, background-service or quarantine changes.

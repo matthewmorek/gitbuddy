@@ -7,12 +7,13 @@ import tempfile
 import unittest
 
 WORKFLOW = Path(__file__).resolve().parent.parent / ".github/workflows/release.yml"
+PAGES = WORKFLOW.with_name("pages.yml")
 
 
-def step_script(name):
+def step_script(name, workflow=WORKFLOW):
     # Deliberately narrow literal-block reader, not a partial YAML implementation.
     # Fail closed if the named step or its indentation/block style changes.
-    text = WORKFLOW.read_text()
+    text = workflow.read_text()
     marker = f"      - name: {name}\n"
     if text.count(marker) != 1:
         raise ValueError("Expected one named workflow step: " + name)
@@ -278,6 +279,68 @@ class WorkflowTests(unittest.TestCase):
                 ["/bin/bash", "-n"], input=body, text=True, capture_output=True
             )
             self.assertEqual(result.returncode, 0, result.stderr)
+
+
+class PagesWorkflowTests(unittest.TestCase):
+    def test_packaged_installer_is_exact_source_not_another_download(self):
+        # Execute the actual package step; no network, deployment or app build.
+        source = WORKFLOW.parent.parent.parent / "scripts/install.sh"
+        with tempfile.TemporaryDirectory(prefix="gitbuddy-pages-") as directory:
+            root = Path(directory)
+            (root / "scripts").mkdir()
+            (root / "scripts/install.sh").write_bytes(source.read_bytes())
+            result = subprocess.run(
+                [
+                    "/bin/bash",
+                    "-eu",
+                    "-c",
+                    step_script("Package public installer", PAGES),
+                ],
+                cwd=root,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(
+                sorted(p.name for p in (root / "_site").iterdir()),
+                ["index.html", "install.sh"],
+            )
+            self.assertEqual(
+                (root / "_site/install.sh").read_bytes(), source.read_bytes()
+            )
+            self.assertIn("gitbuddy#install", (root / "_site/index.html").read_text())
+
+    def test_only_main_can_deploy_after_mac_installer_verification(self):
+        text = PAGES.read_text()
+        build, deploy = text.split("\n  deploy:\n", 1)
+        self.assertIn("branches: [main]", build)
+        self.assertIn("pull_request:", build)
+        self.assertIn("workflow_dispatch:", build)
+        self.assertIn("permissions:\n  contents: read", build)
+        self.assertNotIn("pages: write", build)
+        self.assertNotIn("id-token: write", build)
+        self.assertIn("runs-on: macos-15", build)
+        self.assertIn("persist-credentials: false", build)
+        self.assertIn("sh -n scripts/install.sh", build)
+        self.assertIn("python3 scripts/test_install.py -v", build)
+        self.assertIn("python3 scripts/test_workflow.py -v", build)
+        self.assertIn("actions/upload-pages-artifact@v4", build)
+        self.assertIn("needs: package", deploy)
+        self.assertIn(
+            "github.repository == 'matthewmorek/gitbuddy' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request'",
+            deploy,
+        )
+        for contract in [
+            "pages: write",
+            "id-token: write",
+            "name: github-pages",
+            "actions/deploy-pages@v4",
+        ]:
+            self.assertIn(contract, deploy)
+        self.assertNotIn("contents: write", text)
+        self.assertNotIn("enablement: true", text)
+        self.assertNotIn("gh release", text)
 
 
 def failure_test(failure, retained):
