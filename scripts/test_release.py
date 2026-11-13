@@ -187,33 +187,31 @@ class InventoryTests(unittest.TestCase):
         (self.module / "PATENTS").write_text("Actual patent terms\n")
         (self.module / "source.go").write_text("not legal text")
 
-    def modules(self, **extra):
-        return (
-            json.dumps({"Path": "gitbuddy", "Main": True})
-            + "\n"
-            + json.dumps(
+    def packages(self, **extra):
+        module = {
+            "Path": "example.org/dependency",
+            "Version": "v1.2.3",
+            "Dir": str(self.module),
+            **extra,
+        }
+        return "\n".join(
+            json.dumps(package)
+            for package in [
+                {"ImportPath": "runtime"},
                 {
-                    "Path": "example.org/dependency",
-                    "Version": "v1.2.3",
-                    "Dir": str(self.module),
-                    **extra,
-                }
-            )
+                    "ImportPath": "gitbuddy",
+                    "Module": {"Path": "gitbuddy", "Main": True},
+                },
+                {"ImportPath": "example.org/dependency", "Module": module},
+                {"ImportPath": "example.org/dependency/subpackage", "Module": module},
+            ]
         )
 
     def output(self, stream):
-        return patch.object(
-            build,
-            "go_output",
-            side_effect=lambda *args: (
-                "example.org/dependency\nexample.org/uncached\n"
-                if "-deps" in args
-                else stream
-            ),
-        )
+        return patch.object(build, "go_output", return_value=stream)
 
     def test_deterministic_actual_legal_text(self):
-        with self.output(self.modules()):
+        with self.output(self.packages()):
             first = build.module_notices()
             self.assertEqual(first, build.module_notices())
         text = "\n".join(first)
@@ -224,6 +222,7 @@ class InventoryTests(unittest.TestCase):
             "Actual patent terms",
         ]:
             self.assertIn(expected, text)
+        self.assertEqual(text.count("Actual module license"), 1)
         self.assertNotIn("source.go", text)
 
     def test_generated_inventory_has_one_final_newline(self):
@@ -235,9 +234,7 @@ class InventoryTests(unittest.TestCase):
                 return str(self.root)
             if args == ("env", "GOVERSION"):
                 return "go1.26.7"
-            if "-deps" in args:
-                return "example.org/dependency\n"
-            return self.modules()
+            return self.packages()
 
         with (
             patch.object(build, "ROOT", self.root),
@@ -250,31 +247,55 @@ class InventoryTests(unittest.TestCase):
 
     def test_missing_license_fails(self):
         (self.module / "LICENSE").unlink()
-        with self.output(self.modules()):
+        with self.output(self.packages()):
             with self.assertRaisesRegex(ValueError, "Missing actual module license"):
                 build.module_notices()
 
     def test_replacement_requires_actual_license(self):
         replacement = {"Path": "../local", "Dir": str(self.root)}
-        with self.output(self.modules(Replace=replacement)):
+        with self.output(self.packages(Replace=replacement)):
             with self.assertRaisesRegex(ValueError, "Missing actual module license"):
                 build.module_notices()
 
     def test_missing_local_directory_fails(self):
-        stream = json.dumps({"Path": "example.org/uncached", "Version": "v1.0.0"})
+        stream = json.dumps(
+            {"Module": {"Path": "example.org/uncached", "Version": "v1.0.0"}}
+        )
         with self.output(stream):
             with self.assertRaisesRegex(ValueError, "Missing local module directory"):
                 build.module_notices()
 
     def test_unused_graph_modules_do_not_require_source_downloads(self):
-        stream = (
-            self.modules()
-            + "\n"
-            + json.dumps(
-                {"Path": "example.org/upstream-test-only", "Version": "v1.0.0"}
-            )
+        # Exercise Go's lazy module loading, not a fabricated complete graph:
+        # the executable uses a local module whose unused dependency is absent.
+        (self.root / "go.mod").write_text(
+            "module example.org/app\n\ngo 1.20\n\n"
+            "require example.org/dependency v1.2.3\n"
+            "replace example.org/dependency => ./module\n"
         )
-        with self.output(stream):
+        (self.module / "go.mod").write_text(
+            "module example.org/dependency\n\ngo 1.20\n\n"
+            "require example.org/upstream-test-only v1.0.0\n"
+        )
+        (self.module / "source.go").write_text("package dependency\nconst Value = 1\n")
+        command = self.root / "cmd/gitbuddy"
+        command.mkdir(parents=True)
+        (command / "main.go").write_text(
+            'package main\nimport "example.org/dependency"\n'
+            "func main() { _ = dependency.Value }\n"
+        )
+        with (
+            patch.object(build, "ROOT", self.root),
+            patch.dict(
+                os.environ,
+                GOENV="off",
+                GOWORK="off",
+                GOMODCACHE=str(self.root / "empty-module-cache"),
+                GOPRIVATE="",
+                GONOPROXY="",
+                GONOSUMDB="",
+            ),
+        ):
             text = "\n".join(build.module_notices())
         self.assertIn("Actual module license", text)
         self.assertNotIn("upstream-test-only", text)

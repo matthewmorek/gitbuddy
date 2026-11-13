@@ -2,7 +2,7 @@
 
 A keyboard-first Git history browser with an OpenCode-style **Ctrl+P** command palette, commit details, periodic fetching and explicit pull modes. Built with Go, Bubble Tea v2, Lip Gloss and Bubbles. Git is the source of truth; `gh` is not required.
 
-Release candidate: **0.1.0**. Preparing this candidate does not publish a release.
+Release candidate: **0.1.1**. Preparing this candidate does not publish a release.
 
 ## Development
 
@@ -27,12 +27,12 @@ Omit the path to open the current repository. Subdirectories are accepted. Run i
 ## Standalone build and delivery
 
 On macOS arm64, `python3 scripts/build.py --release` produces
-`dist/gitbuddy-0.1.0-darwin-arm64`, embedded themes/notices and SHA-256 checksums.
+`dist/gitbuddy-0.1.1-darwin-arm64`, embedded themes/notices and SHA-256 checksums.
 The executable needs Git but not Go, Bun or Node. Check it outside the source directory with:
 
 ```sh
-python3 scripts/smoke-terminal.py --binary dist/gitbuddy-0.1.0-darwin-arm64
-python3 scripts/check-release.py v0.1.0
+python3 scripts/smoke-terminal.py --binary dist/gitbuddy-0.1.1-darwin-arm64
+python3 scripts/check-release.py v0.1.1
 ```
 
 The shell installer/updater targets `matthewmorek/gitbuddy` releases, installs to

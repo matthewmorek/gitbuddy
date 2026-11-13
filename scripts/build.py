@@ -37,25 +37,21 @@ def go_output(*args):
 
 
 def module_notices():
-    """Inventory resolved modules, not module-cache leftovers or npm packages."""
-    # The graph also contains upstream tests and unused Bubbles widgets. Only
-    # modules supplying packages to this executable are distributed in it.
-    used = set(
-        go_output(
-            "list", "-deps", "-f", "{{with .Module}}{{.Path}}{{end}}", "./cmd/gitbuddy"
-        ).splitlines()
-    )
-    stream = go_output("list", "-m", "-json", "all")
+    """Inventory only modules supplying packages to the executable."""
+    # Package metadata already includes the resolved module and replacement.
+    # Listing the entire module graph would also require uncached metadata for
+    # unused widgets/upstream tests, breaking offline builds on clean CI runners.
+    stream = go_output("list", "-deps", "-json", "./cmd/gitbuddy")
     decoder = json.JSONDecoder()
-    modules = []
+    modules = {}
     while stream.strip():
-        module, end = decoder.raw_decode(stream.lstrip())
-        modules.append(module)
+        package, end = decoder.raw_decode(stream.lstrip())
+        module = package.get("Module")
+        if module and not module.get("Main"):
+            modules[module["Path"]] = module
         stream = stream.lstrip()[end:]
     sections = []
-    for module in sorted(modules, key=lambda item: item["Path"]):
-        if module.get("Main") or module["Path"] not in used:
-            continue
+    for module in sorted(modules.values(), key=lambda item: item["Path"]):
         actual = module.get("Replace", module)
         label = module["Path"] + "@" + module.get("Version", "local")
         if "Replace" in module:
