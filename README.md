@@ -1,19 +1,24 @@
 # Gitbuddy
 
-A keyboard-first Git history browser with an OpenCode-style **Ctrl+P** command palette, commit details, periodic fetching and explicit pull modes. Built with Bun, Solid and OpenTUI. Git is the source of truth; `gh` is not required.
+A keyboard-first Git history browser with an OpenCode-style **Ctrl+P** command palette, commit details, periodic fetching and explicit pull modes. Built with Go, Bubble Tea v2, Lip Gloss and Bubbles. Git is the source of truth; `gh` is not required.
 
-Development version: **0.1.0-dev.0**. The first published release is planned as **0.1.0**. No release is published yet.
+Release candidate: **0.1.0**. Preparing this candidate does not publish a release.
 
 ## Development
 
-Requires macOS, Git, and Bun 1.4.4. From this checkout:
+Gitbuddy's original code is [MIT-licensed](LICENSE). Bundled components keep their
+own licenses. See [licensing](docs/LICENSING.md) for the embedded notice inventory.
+
+Requires macOS, Git, and Go 1.26.7 or newer. The Go toolchain may download the
+version required by `go.mod` when automatic toolchain selection is enabled.
+From this checkout:
 
 ```sh
-bun install --frozen-lockfile
-bun run dev -- /path/to/repository
-bun run typecheck
-bun test
-# Optional real-terminal protocol smoke test (requires Python 3):
+go run ./cmd/gitbuddy /path/to/repository
+go test ./...
+go vet ./...
+# Build/release tests and terminal checks use Python 3, without third-party packages:
+python3 -m unittest discover -s scripts
 python3 scripts/smoke-terminal.py
 ```
 
@@ -21,21 +26,24 @@ Omit the path to open the current repository. Subdirectories are accepted. Run i
 
 ## Standalone build and delivery
 
-On macOS arm64, `bun run build` produces `dist/gitbuddy-0.1.0-dev.0-darwin-arm64`,
-embedded native resources/themes/notices, and SHA-256 checksums. The executable
-needs Git but not Bun or Node. Check it outside the source directory with:
+On macOS arm64, `python3 scripts/build.py --release` produces
+`dist/gitbuddy-0.1.0-darwin-arm64`, embedded themes/notices and SHA-256 checksums.
+The executable needs Git but not Go, Bun or Node. Check it outside the source directory with:
 
 ```sh
-python3 scripts/smoke-terminal.py --binary dist/gitbuddy-0.1.0-dev.0-darwin-arm64
+python3 scripts/smoke-terminal.py --binary dist/gitbuddy-0.1.0-darwin-arm64
+python3 scripts/check-release.py v0.1.0
 ```
 
 The shell installer/updater targets `matthewmorek/gitbuddy` releases, installs to
 `~/.local/bin` without sudo or profile edits, and supports explicit version pins
-for rollback. **No public download is available yet.** Hosting, redistribution
-obligations and Gatekeeper remain release prerequisites; the local development
-binary is not notarized and was rejected by Gatekeeper assessment. See
+for rollback. Download URLs become usable only after release publication.
+The first release is deliberately **unsigned and not notarized**; macOS may block
+execution. An actual downloaded-install check remains a publication prerequisite;
+local execution does not establish Gatekeeper acceptance. See
 [release preparation and installation](docs/RELEASING.md) for exact commands,
-failure guarantees and the manually dispatched artifact-building workflow.
+failure guarantees and the manual build → optional draft → prerelease testing →
+stable promotion flow. Ordinary pushes never publish or update installed copies.
 
 ## Keyboard
 
@@ -55,11 +63,11 @@ History defaults to local branches, remote-tracking branches, tags and HEAD, exc
 
 Below 100 terminal columns, history and details share one pane. Selection is retained across refreshes, including when a selected commit leaves the loaded history. Navigate again to select a visible commit. **Maximum commits** defaults to **100** and caps the total loaded history, not each page. Change it through Ctrl+P → Maximum commits; changes apply immediately, retaining selected details even when the new limit excludes that commit. Larger limits load in pages of up to 200 commits; only visible list rows are rendered. Each paging generation uses frozen commit tips so a fetch cannot shift subsequent pages.
 
-The design follows Tower's focused Git workflows and OpenCode V2's spacious, keyboard-first presentation: show only the information needed for the current task. Compatible OpenTUI components are preferred when they simplify a useful interaction, not to add decoration or duplicate existing capabilities.
+The design follows Tower's focused Git workflows and OpenCode V2's spacious, keyboard-first presentation: show only the information needed for the current task. The Go interface uses Bubbles components where they simplify the interaction, without carrying a second UI runtime.
 
 Panels and dialogs are borderless, with one cell of horizontal and vertical padding, including around the terminal edges. Header and footer content have an additional cell of horizontal inset; the hotkey bar uses a faint theme surface. The active pane uses the darker theme surface and a bold heading. A blank row separates the History heading from the list. Selected history rows have a continuous, theme-accent left-edge bar across both lines. Palette options occupy one line with a full-row highlight, an accent edge and muted, right-aligned categories; the selected action's unavailable reason appears below the options. Open dialogs apply a faint, theme-aware backdrop without dimming their own content.
 
-Loading history, additional pages, fetching and pulling show an animated spinner beside the current action in the footer. Selecting a commit reads its details locally; it does not fetch from remotes or replace the footer status. Only detail reads lasting over 150 ms show a spinner, inside the details pane, so quick navigation stays quiet. The footer retains operation/fetch status and actionable errors, not commit counts, the configured limit or the auto-fetch interval; preferences remain available in settings. The spinner is a small attributed OpenCode adaptation using OpenTUI's animation clock; `opentui-spinner` 0.0.7 targets older OpenTUI APIs and is not a dependency.
+Loading history, additional pages, fetching and pulling show a Bubbles spinner beside the current action in the footer. Selecting a commit reads its details locally; it does not fetch from remotes or replace the footer status. Only detail reads lasting over 150 ms show a spinner, inside the details pane, so quick navigation stays quiet. The footer retains operation/fetch status and actionable errors, not commit counts, the configured limit or the auto-fetch interval; preferences remain available in settings.
 
 ## Fetch and pull safety
 
@@ -93,10 +101,28 @@ Preferences live in `$XDG_CONFIG_HOME/gitbuddy/config.json`, or `~/.config/gitbu
 
 The interval accepts whole minutes from 1 to 1440. `maxCommits` accepts positive safe integers; older configuration without this field uses 100. Color mode is `system`, `light` or `dark`; system follows terminal reporting, with dark as the fallback. Changes apply to the running app and are saved atomically. Invalid or externally modified configuration produces a warning rather than silently overwriting your file; repair it externally and restart.
 
-Bundled themes: OpenCode, Tokyo Night and Catppuccin. Custom themes go in the **Gitbuddy** config directory's `themes/*.json`; the filename without `.json` is the theme name. Both OpenCode V2 documents and legacy theme documents are supported through `@opencode/theme/tui`. Gitbuddy does not read or modify OpenCode preferences. See [OpenCode's theme format](https://opencode.ai/docs/themes/) and [third-party notices](THIRD_PARTY_NOTICES.md).
+Bundled palettes: OpenCode, Tokyo Night and Catppuccin, in dark and light modes.
+Existing Gitbuddy settings keep working. Custom themes go in the **Gitbuddy**
+config directory's `themes/*.json`; the filename without `.json` is the theme name.
+The Go version uses a deliberately smaller format instead of embedding OpenCode's
+TypeScript theme engine. Full OpenCode theme documents need conversion; unsupported
+files produce a warning and are never rewritten. Gitbuddy never reads OpenCode preferences.
+
+```json
+{
+  "dark": {
+    "background": "#0a0a0a", "panel": "#141414", "active": "#0a0a0a",
+    "selection": "#1e1e1e", "text": "#eeeeee", "muted": "#808080", "accent": "#9d7cd8"
+  }
+}
+```
+
+Supply at least one complete `dark` or `light` mode; a missing mode uses the other.
+All seven colors must be `#RRGGBB`, and `active` must be darker than `panel`.
+See [third-party notices](THIRD_PARTY_NOTICES.md) for palette provenance.
 
 ## Scope and verification
 
 One repository per process. No daemon, filesystem watcher, PR/check integration, staging, graph, patch viewer or in-app updater. Refresh after changes made by other tools. macOS is the initial target; an architecture is not supported merely because a cross-compile succeeds.
 
-Tests cover real temporary Git repositories/local remotes, session ordering and selection, configuration integrity, themes and native OpenTUI keyboard interactions. They do not require GitHub credentials. Live terminal appearance, assistive technology, Gatekeeper and release delivery must be evaluated separately; headless rendering does not establish those guarantees.
+Tests cover real temporary Git repositories/local remotes, asynchronous message ordering and selection, configuration integrity, themes and Bubble Tea keyboard interactions. They do not require GitHub credentials. Live terminal appearance, assistive technology, Gatekeeper and release delivery must be evaluated separately; automated rendering does not establish those guarantees.

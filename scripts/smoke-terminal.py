@@ -24,11 +24,11 @@ parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument(
     "--binary",
     type=Path,
-    help="Copy this executable outside the source tree and run without Bun/Node on PATH",
+    help="Copy this executable outside the source tree and run without Go/Bun/Node on PATH",
 )
 arguments = parser.parse_args()
 binary_source = arguments.binary.resolve() if arguments.binary else None
-expected_version = json.loads((PROJECT / "package.json").read_text())["version"]
+expected_version = (PROJECT / "internal/buildinfo/version.txt").read_text().strip()
 scratch = Path(tempfile.gettempdir()) / "opencode"
 scratch = scratch if scratch.is_dir() else Path(tempfile.gettempdir())
 
@@ -48,7 +48,7 @@ def git(repo, *args, data=None):
     )
 
 
-def exercise(root, repo, width, mode, binary):
+def exercise(root, repo, width, mode, executable, isolated):
     config = root / f"config-{width}" / "gitbuddy"
     config.mkdir(parents=True)
     (config / "config.json").write_text(
@@ -61,18 +61,18 @@ def exercise(root, repo, width, mode, binary):
         "GIT_CONFIG_GLOBAL": "/dev/null",
         "GIT_CONFIG_SYSTEM": "/dev/null",
     }
-    if binary:
+    if isolated:
         env = {
             key: value
             for key, value in env.items()
             if not key.startswith(("BUN_", "OPENTUI_", "NODE_"))
         }
         env.update({"PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "HOME": str(root)})
-        assert not shutil.which("bun", path=env["PATH"]) and not shutil.which(
-            "node", path=env["PATH"]
+        assert all(
+            not shutil.which(tool, path=env["PATH"]) for tool in ("go", "bun", "node")
         )
         version = subprocess.run(
-            [str(binary), "--version"],
+            [str(executable), "--version"],
             cwd=repo,
             env=env,
             capture_output=True,
@@ -81,7 +81,7 @@ def exercise(root, repo, width, mode, binary):
         )
         assert version.stdout.decode().strip() == f"gitbuddy {expected_version}"
         notices = subprocess.run(
-            [str(binary), "--licenses"],
+            [str(executable), "--licenses"],
             cwd=repo,
             env=env,
             capture_output=True,
@@ -89,7 +89,7 @@ def exercise(root, repo, width, mode, binary):
             timeout=15,
         )
         assert (
-            b"LICENSE-FFMPEG" in notices.stdout
+            b"charm.land/bubbletea/v2" in notices.stdout
             and b"Copyright (c) 2025 opencode" in notices.stdout
         )
     # Slow only fixture log reads so startup must render its loading state before
@@ -108,10 +108,8 @@ def exercise(root, repo, width, mode, binary):
     env["PATH"] = str(tools) + os.pathsep + env.get("PATH", os.defpath)
     pid, fd = pty.fork()
     if pid == 0:
-        os.chdir(repo if binary else PROJECT)
-        command = (
-            [str(binary), str(repo)] if binary else ["bun", "src/main.tsx", str(repo)]
-        )
+        os.chdir(repo)
+        command = [str(executable), str(repo)]
         os.execvpe(command[0], command, env)
     fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 32, width, 0, 0))
     output = bytearray()
@@ -177,18 +175,18 @@ def exercise(root, repo, width, mode, binary):
             drain(0.1)
         assert reaped, "Ordinary quit did not terminate"
         assert b"\x1b[?1049l" in output, "Alternate-screen restoration was not emitted"
-        assert b"Orphan text error" not in output and b"TypeError:" not in output, (
+        assert b"panic:" not in output and b"fatal error:" not in output, (
             "Runtime error in PTY"
         )
         print(
-            f"PASS {'binary (no Bun/Node)' if binary else 'source'} PTY {width}x32, {mode}, 1200 commits: loading/palette/theme/plain Escape/paging/quit/restoration"
+            f"PASS {'binary (no Go/Bun/Node)' if isolated else 'source'} PTY {width}x32, {mode}, 1200 commits: loading/palette/theme/plain Escape/paging/quit/restoration"
         )
     finally:
         evidence = PROJECT / ".verification"
         evidence.mkdir(exist_ok=True)
-        (evidence / f"pty-{'binary-' if binary else ''}{width}-{mode}.log").write_bytes(
-            output
-        )
+        (
+            evidence / f"pty-{'binary-' if isolated else ''}{width}-{mode}.log"
+        ).write_bytes(output)
         if not reaped:
             os.kill(pid, signal.SIGTERM)
             drain(0.5)
@@ -199,8 +197,8 @@ def exercise(root, repo, width, mode, binary):
         os.close(fd)
 
 
-assert shutil.which("git") and (binary_source or shutil.which("bun")), (
-    "Git and a binary (or Bun) are required"
+assert shutil.which("git") and (binary_source or shutil.which("go")), (
+    "Git and a binary (or Go) are required"
 )
 with tempfile.TemporaryDirectory(prefix="gitbuddy-pty-", dir=scratch) as directory:
     root = Path(directory)
@@ -216,14 +214,29 @@ with tempfile.TemporaryDirectory(prefix="gitbuddy-pty-", dir=scratch) as directo
         stream.extend(b"M 100644 inline file.txt\ndata 1\nx\n\n")
     stream.extend(b"done\n")
     git(repo, "fast-import", "--quiet", data=stream)
-    binary = None
+    executable = root / "gitbuddy"
     if binary_source:
-        binary = root / "gitbuddy"
-        shutil.copy2(binary_source, binary)
-        # A compiled app must ignore executable Bun configuration in the repository.
+        shutil.copy2(binary_source, executable)
+        # Legacy executable repository configuration is never loaded by the Go app.
         (repo / "bunfig.toml").write_text('preload = ["./unexpected-preload.ts"]\n')
         (repo / "unexpected-preload.ts").write_text(
             'throw new Error("Repository preload must not execute");\n'
         )
+    else:
+        subprocess.run(
+            [
+                "go",
+                "build",
+                "-trimpath",
+                "-buildvcs=false",
+                "-o",
+                str(executable),
+                "./cmd/gitbuddy",
+            ],
+            cwd=PROJECT,
+            env={**os.environ, "CGO_ENABLED": "0"},
+            check=True,
+            timeout=120,
+        )
     for width, mode in [(120, "dark"), (75, "light")]:
-        exercise(root, repo, width, mode, binary)
+        exercise(root, repo, width, mode, executable, bool(binary_source))

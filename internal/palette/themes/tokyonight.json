@@ -1,0 +1,10 @@
+{
+  "dark": {
+    "background": "#1a1b26", "panel": "#1e2030", "active": "#1a1b26",
+    "selection": "#222436", "text": "#c8d3f5", "muted": "#828bb8", "accent": "#ff966c"
+  },
+  "light": {
+    "background": "#e1e2e7", "panel": "#e1e2e7", "active": "#d5d6db",
+    "selection": "#c8c9ce", "text": "#3760bf", "muted": "#8990a3", "accent": "#b15c00"
+  }
+}

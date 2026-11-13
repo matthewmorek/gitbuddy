@@ -19,6 +19,7 @@ Installs or updates gitbuddy (macOS arm64) in ~/.local/bin by default.
 Without --version, installs the latest stable release, never a downgrade.
 Use --version X.Y.Z to pin a release, including an intentional rollback.
 No sudo, profile edits, credentials, or quarantine changes are performed.
+Initial releases are unsigned and not notarized. macOS may block execution.
   --help    Show this help
 HELP
 }
@@ -130,7 +131,7 @@ download() {
 if [ "$pinned" = false ]; then
   release_url=$(curl -q --fail --silent --show-error --head --location --proto '=https' --proto-redir '=https' \
     --max-redirs 5 --connect-timeout 15 --max-time 60 --output /dev/null --write-out '%{url_effective}' \
-    "$repository/releases/latest") || fail 'could not resolve latest stable release'
+    "$repository/releases/latest") || fail 'could not resolve latest stable release; check connectivity and whether a stable release exists (use --version X.Y.Z for a published prerelease candidate)'
   version=${release_url#"$repository/releases/tag/v"}
   stable_version "$version" && [ "$release_url" = "$repository/releases/tag/v$version" ] || fail 'latest release redirect is not a stable tag URL for this repository'
 fi
@@ -170,7 +171,7 @@ temp_dir=$(mktemp -d "$install_dir/.gitbuddy-install.XXXXXXXX") || fail 'cannot 
 asset=gitbuddy-$version-darwin-arm64
 base_url=$repository/releases/download/v$version
 staged=$temp_dir/$asset
-download "$base_url/$asset" "$staged" 157286400 || fail 'binary download failed'
+download "$base_url/$asset" "$staged" 157286400 || fail "binary download failed; check connectivity and that v$version is published (not a draft) with the macOS arm64 asset"
 download "$base_url/SHA256SUMS" "$temp_dir/SHA256SUMS" 1048576 || fail 'checksum download failed'
 
 # Only one exact asset entry is accepted; never let a remote checksum manifest

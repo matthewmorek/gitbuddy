@@ -1,104 +1,140 @@
 # Preparing and distributing Gitbuddy
 
-The installer targets **matthewmorek/gitbuddy** GitHub Releases. Release preparation
-builds and executes a native macOS arm64 binary; users need Git, not Bun or Node.
-The workflow deliberately **does not create tags or publish releases**. Ordinary
-pushes never start release preparation or update installed copies.
+Gitbuddy uses a manual release flow: **verify an existing tag → build/test → optional
+draft → public prerelease test → stable promotion**. The installer targets
+`matthewmorek/gitbuddy`, installs a native macOS arm64 binary, and updates it when
+rerun. Users need Git, not Go, Bun or Node. Ordinary pushes do not publish releases.
 
-## Current delivery status
+## First release policy
 
-- Development version: `0.1.0-dev.0`; first stable release: `0.1.0`, tag `v0.1.0`.
-- No release exists as part of this implementation. Publish the intended repository
-  and establish its matching checkout remote before releasing. The public installer
-  requires unauthenticated release downloads.
-- Local macOS arm64 binary execution works outside the source directory, without
-  Bun or Node on PATH. Intel macOS and other systems are not advertised or built.
-- The development artifact is **not Developer ID signed or notarized**.
-  `spctl --assess --type execute` rejected it. Local terminal execution is not
-  Gatekeeper acceptance; real downloaded-artifact behavior remains unverified.
-  Decide signing/notarization and test the actual downloaded release before
-  declaring public delivery ready. Do not remove quarantine as a workaround.
-- Native dependencies include LGPL components: FFmpeg in OpenTUI and
-  JavaScriptCore/WebKit in Bun. Review redistribution/source/relinking obligations
-  and choose the project's own license before publication. The generated license
-  inventory is supporting material, not a compliance certification.
-
-## Version policy
-
-Use Semantic Versioning. Before 1.0, patches are compatible fixes; minors introduce
-features or clearly documented breaking changes. Keep development prereleases
-distinct from stable releases. Set `package.json` to the intended stable version
-as part of an explicitly authorized release change; `--version`, artifact names,
-checksums and tag must agree. The build refuses `--release` for development versions.
+- Candidate version: `0.1.0`, tag `v0.1.0`. Changing a manifest is not publication.
+- The first release is **unsigned and not notarized**, by maintainer choice.
+  Actual downloaded execution must be tested; local execution of a Go build does
+  not establish Gatekeeper acceptance. Do not disable Gatekeeper,
+  remove quarantine, or claim notarization to make the test pass. If macOS blocks
+  the intended installation path, leave the release a prerelease and revisit signing.
+- Only macOS arm64 is supported. Intel and other platforms require their own
+  executed binary verification before adding assets or installer support.
+- Gitbuddy's original code is MIT-licensed. Preserve the generated Go/module
+  notices and OpenCode palette attribution. The Go distribution no longer embeds
+  Bun/OpenTUI or their native LGPL dependencies; see [licensing](LICENSING.md).
+- Confirm the public destination and the checkout's matching remote before release
+  operations. Workflow presence alone does not prove hosting or public downloads work.
 
 ## Local preparation
 
-With Bun 1.4.4 and dependencies installed:
+With Go 1.26.7 or newer, Git and Python 3:
 
 ```sh
-bun run typecheck
-bun test
+go test ./...
+go vet ./...
+python3 -m unittest discover -s scripts
 bash -n scripts/install.sh
 python3 scripts/smoke-terminal.py
-bun run build
-python3 scripts/smoke-terminal.py --binary dist/gitbuddy-0.1.0-dev.0-darwin-arm64
-(cd dist && shasum -a 256 -c SHA256SUMS)
+python3 scripts/build.py --release
+python3 scripts/smoke-terminal.py --binary dist/gitbuddy-0.1.0-darwin-arm64
+python3 scripts/check-release.py v0.1.0
 ```
 
-The native library, theme documents and installed dependency notices are embedded.
-`gitbuddy --licenses` prints the inventory. Compiled builds ignore repository
-`bunfig.toml`, `.env`, `package.json` and TypeScript configuration at startup.
-The binary smoke check copies the executable to a temporary location, uses system
-tools only on PATH, exercises real PTYs at two sizes/modes and verifies that a
-repository's Bun preload is not executed. It is not human visual/accessibility
-or Gatekeeper verification.
+`check-release.py` is read-only: it checks the tag against `internal/buildinfo/version.txt`, requires a
+single nonempty matching changelog section, verifies exactly the expected checksum
+entries and regular asset files, then prints the release notes. It does not execute
+the artifact, contact GitHub, create a tag or publish anything. Old build files in
+`dist` are ignored, never uploaded by the workflow's explicit asset list.
 
-## Stable release checklist
+The build uses `CGO_ENABLED=0`, embeds palettes and dependency notices, and requires
+no separate UI dynamic library. `--licenses` prints the inventory. Repository Bun
+preload/config and `.env` files are never loaded by the Go app.
+The binary smoke test runs outside the source directory without Go/Bun/Node on PATH,
+at two terminal sizes and theme modes. This is not human visual/accessibility,
+download or Gatekeeper verification.
 
-1. Resolve the availability, licensing and downloaded-artifact/Gatekeeper items
-   above; update release notes and set the manifest version. Obtain fresh checks
-   and independent review of that exact candidate. Obtain separate authorization
-   for Git, tag and hosting effects; this document grants none.
-2. Ensure the selected checkout's remote and the destination are
-   `matthewmorek/gitbuddy`. Create the approved commit/tag through the authorized
-   release process. Do not replace an existing version or tag.
-3. Manually dispatch **Prepare release artifacts** for the existing stable tag.
-   It checks tag/manifest/architecture, runs tests and source/binary PTY checks,
-   then stores the assets as a workflow artifact. Its read-only repository token
-   cannot publish a GitHub Release. Hosted success must be inspected, not inferred
-   from the local run or this workflow's existence.
-4. Through the separately authorized publication process, attach the exact verified
-   raw `gitbuddy-X.Y.Z-darwin-arm64`, `SHA256SUMS`, `THIRD_PARTY_NOTICES.txt` and
-   `install.sh` to the matching GitHub Release, together with any required source
-   or rebuilding materials. Publish as a stable, non-prerelease release only after
-   the final download/install/update check. Never silently replace published assets.
+## Prepare an optional draft
 
-The installer resolves one latest stable tag, then pins all downloads to it.
-Checksums detect corruption; they do **not** defend against a compromised release
-host. Preserve an existing executable and configuration on failed updates.
+1. Finish local verification and independent review of the exact candidate. Through
+   separately authorized Git operations, commit and push it and its matching tag.
+   Never move/reuse a published version tag. This document grants no Git authority.
+2. From **main**, manually dispatch **Prepare release** with the existing tag
+   `v0.1.0`. Leave **create_draft** unchecked for artifact-only preparation. The
+   read-only build job checks tag/manifest/architecture, runs tests and source/binary
+   terminal checks, and archives four verified files:
+   `gitbuddy-0.1.0-darwin-arm64`, `SHA256SUMS`, `THIRD_PARTY_NOTICES.txt`, `install.sh`.
+3. Selecting **create_draft** explicitly requests a second, write-authorized job.
+   It checks out the tested commit, revalidates transferred bytes, checks the tag
+   object has not changed, and refuses any existing release or draft for that tag.
+   It uploads the exact four files to a **new draft marked prerelease, not latest**.
+   It neither creates a tag nor publishes. Only this job has `contents: write`;
+   it uses the workflow token, not a personal token or signing credentials.
+4. Inspect the run, draft, notes, tag SHA and assets. If creation/upload partially
+   fails, preserve the draft and artifacts and inspect them manually. There is no
+   automatic delete, clobber, rollback or upload retry. A post-upload tag mismatch
+   also stops with the draft retained. A preflight is not a lock against a maintainer
+   retargeting a tag concurrently; keep release tags immutable.
 
-## Install, update and rollback (after publication)
+GitHub workflow artifacts do not preserve executable permission bits. For a manually
+downloaded binary, verify checksums before explicitly making it executable. The
+installer performs checksum verification before its own `chmod` and version check.
 
-Until a release is published these URLs are not an installation service. Download
-and inspect the installer before running it:
+## Public prerelease test, then stable promotion
+
+A draft is not anonymously downloadable. After licensing prerequisites and draft
+inspection, the maintainer can explicitly publish it **as a prerelease**, leaving
+the same stable-shaped tag/version and assets in place. GitHub's prerelease flag
+keeps it out of `/releases/latest`; it is a distribution trial, not stable approval.
+
+Download and inspect the pinned installer; do not pipe a network response to a shell:
 
 ```sh
-curl --proto '=https' --tlsv1.2 -fL \
-  https://github.com/matthewmorek/gitbuddy/releases/latest/download/install.sh \
+curl -q --proto '=https' --proto-redir '=https' --tlsv1.2 -fL \
+  https://github.com/matthewmorek/gitbuddy/releases/download/v0.1.0/install.sh \
   -o install-gitbuddy.sh
 bash install-gitbuddy.sh --help
+# After inspection, isolate this trial from your normal installation:
+bash install-gitbuddy.sh --version 0.1.0 --install-dir "$HOME/.local/gitbuddy-trial/bin"
+"$HOME/.local/gitbuddy-trial/bin/gitbuddy" --version
+"$HOME/.local/gitbuddy-trial/bin/gitbuddy" /path/to/repository
+```
+
+Check real macOS security behavior, terminal startup/quit, themes and Git reads;
+repeat the install to verify the current-version no-op. For subsequent releases,
+also test upgrading from the previous stable version and explicitly rolling back.
+Offline tests cover failures preserving the old binary/configuration, but do not
+substitute for this hosted test. Record the tested release asset hashes and platform.
+
+Only after these checks, explicitly edit the same release to clear **prerelease**
+and mark it **latest**. Do not rebuild or replace the verified assets during
+promotion. Then check the unpinned installation path below; report failures rather
+than automatically replacing assets, republishing or discarding the previous release.
+
+## Install, update and rollback
+
+Once a stable release exists, download and inspect its installer:
+
+```sh
+curl -q --proto '=https' --proto-redir '=https' --tlsv1.2 -fL \
+  https://github.com/matthewmorek/gitbuddy/releases/latest/download/install.sh \
+  -o install-gitbuddy.sh
 bash install-gitbuddy.sh
 ```
 
-Rerun for an update. Default destination is `~/.local/bin/gitbuddy`; no sudo,
-shell-profile edits, unattended jobs or in-app updater are used. An absolute
-`--install-dir` overrides the directory. Add it to PATH yourself if needed.
-An explicit pin permits rollback:
+Rerun to update. Default destination is `~/.local/bin/gitbuddy`; no sudo, profile
+edits, background updater, in-app update command or quarantine changes are made.
+An absolute `--install-dir` overrides it. Add the directory to PATH yourself if
+needed. The installer resolves one latest tag and pins all downloads to it, verifies
+SHA-256 and executable version, then replaces the old binary on the same filesystem.
+An unavailable release, corrupt download or failure before replacement preserves
+the existing executable and preferences. Checksums do not defend against a
+compromised release host.
 
-```sh
-bash install-gitbuddy.sh --version 0.1.0
-```
+`bash install-gitbuddy.sh --version X.Y.Z` explicitly pins a release, including a
+rollback; default latest never silently downgrades. Back up preferences/themes
+before a configuration-incompatible downgrade. Uninstalling or downgrading does
+not reverse Git operations already performed.
 
-Default latest installation never silently downgrades. Keep configuration/theme
-backups before a downgrade that changes their compatibility. Uninstalling or
-downgrading Gitbuddy does not reverse Git operations already performed.
+## Subsequent versions
+
+Use SemVer. Before 1.0, patches are compatible fixes; minors introduce features or
+documented breaking changes. Add a `## [X.Y.Z]` changelog section and update
+`internal/buildinfo/version.txt` together. Keep development prereleases distinct from stable candidates;
+`--release` rejects them. Repeat the same exact-candidate verification and manual
+draft/prerelease/promotion sequence for each immutable version.

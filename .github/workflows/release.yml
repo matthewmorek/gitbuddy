@@ -1,7 +1,6 @@
-name: Prepare release artifacts
+name: Prepare release
 
-# Preparation only. Creating tags, uploading release assets and publishing a
-# GitHub Release remain separate, explicitly authorized maintainer operations.
+# Manual only. Draft creation is opt-in; this never creates tags or publishes.
 on:
   workflow_dispatch:
     inputs:
@@ -9,15 +8,28 @@ on:
         description: Existing stable release tag (first release v0.1.0)
         required: true
         type: string
+      create_draft:
+        description: Upload verified assets to a NEW draft prerelease (never publish)
+        required: true
+        default: false
+        type: boolean
+
+concurrency:
+  group: release-${{ inputs.tag }}
+  cancel-in-progress: false
 
 permissions:
   contents: read
 
 jobs:
   macos-arm64:
-    if: github.repository == 'matthewmorek/gitbuddy'
+    if: github.repository == 'matthewmorek/gitbuddy' && github.ref == 'refs/heads/main'
     runs-on: macos-15
     timeout-minutes: 15
+    outputs:
+      commit: ${{ steps.release.outputs.commit }}
+      tag_oid: ${{ steps.release.outputs.tag_oid }}
+      version: ${{ steps.release.outputs.version }}
     env:
       RELEASE_TAG: ${{ inputs.tag }}
     steps:
@@ -28,34 +40,89 @@ jobs:
         with:
           ref: ${{ inputs.tag }}
           persist-credentials: false
-      - uses: oven-sh/setup-bun@v2
+      - uses: actions/setup-go@v6
         with:
-          bun-version: 1.4.4
-      - name: Check repository, architecture, tag and manifest agree
+          go-version-file: go.mod
+      - name: Check repository, architecture, tag and source version agree
+        id: release
         shell: bash
         run: |
           test "$(uname -m)" = arm64
           test "$(git remote get-url origin)" = https://github.com/matthewmorek/gitbuddy
           test "$(git rev-parse HEAD)" = "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")"
-          test "$RELEASE_TAG" = "v$(bun -e 'console.log(require("./package.json").version)')"
-      - run: bun install --frozen-lockfile
-      - run: bun run typecheck
-      - run: bun test
+          test "$RELEASE_TAG" = "v$(python3 -c 'from pathlib import Path; print(Path("internal/buildinfo/version.txt").read_text().strip())')"
+          echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "tag_oid=$(git rev-parse "refs/tags/$RELEASE_TAG")" >> "$GITHUB_OUTPUT"
+          echo "version=${RELEASE_TAG#v}" >> "$GITHUB_OUTPUT"
+      - run: go test ./...
+      - run: go vet ./...
+      - run: |
+          python3 scripts/test_release.py -v
+          python3 scripts/test_install.py -v
+          python3 scripts/test_workflow.py -v
       - run: bash -n scripts/install.sh
       - run: python3 scripts/smoke-terminal.py
-      - run: bun run build --release
-      - name: Execute standalone binary without Bun or Node
+      - run: python3 scripts/build.py --release
+      - name: Execute standalone Go binary
         shell: bash
         run: python3 scripts/smoke-terminal.py --binary "dist/gitbuddy-${RELEASE_TAG#v}-darwin-arm64"
       - name: Check asset checksums
         working-directory: dist
         run: shasum -a 256 -c SHA256SUMS
+      - name: Validate exact release bundle and notes
+        run: python3 scripts/check-release.py "$RELEASE_TAG"
       - uses: actions/upload-artifact@v4
         with:
           name: gitbuddy-${{ inputs.tag }}-darwin-arm64
           path: |
-            dist/gitbuddy-*-darwin-arm64
+            dist/gitbuddy-${{ steps.release.outputs.version }}-darwin-arm64
             dist/SHA256SUMS
             dist/THIRD_PARTY_NOTICES.txt
             dist/install.sh
           if-no-files-found: error
+
+  draft:
+    if: inputs.create_draft
+    needs: macos-arm64
+    runs-on: macos-15
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      RELEASE_TAG: ${{ inputs.tag }}
+      RELEASE_VERSION: ${{ needs.macos-arm64.outputs.version }}
+      EXPECTED_TAG_OID: ${{ needs.macos-arm64.outputs.tag_oid }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.macos-arm64.outputs.commit }}
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: gitbuddy-${{ inputs.tag }}-darwin-arm64
+          path: dist
+      - name: Revalidate transferred bundle and prepare notes
+        run: python3 scripts/check-release.py "$RELEASE_TAG" > "$RUNNER_TEMP/gitbuddy-release-notes.md"
+      - name: Create draft without changing tags or existing releases
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          verify_tag() {
+            gh api --hostname github.com --method GET "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" > "$RUNNER_TEMP/gitbuddy-tag.json"
+            python3 -c 'import json, os, sys; actual=json.load(open(sys.argv[1]))["object"]["sha"]; sys.exit(0 if actual == os.environ["EXPECTED_TAG_OID"] else "Tag changed since verification; stop and inspect the retained artifacts/draft.")' "$RUNNER_TEMP/gitbuddy-tag.json"
+          }
+          verify_tag
+          # The list includes drafts for this write-authorized token. A by-tag
+          # published-release lookup alone cannot safely establish absence.
+          gh api --hostname github.com --method GET --paginate --slurp "repos/$GITHUB_REPOSITORY/releases?per_page=100" > "$RUNNER_TEMP/gitbuddy-releases.json"
+          python3 -c 'import json, os, sys; releases=[r for page in json.load(open(sys.argv[1])) for r in page]; sys.exit("Release already exists; inspect it manually, do not overwrite or retry uploads.") if any(r["tag_name"] == os.environ["RELEASE_TAG"] for r in releases) else None' "$RUNNER_TEMP/gitbuddy-releases.json"
+          gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+            --verify-tag --draft --prerelease --latest=false \
+            --title "Gitbuddy $RELEASE_VERSION" \
+            --notes-file "$RUNNER_TEMP/gitbuddy-release-notes.md" \
+            "dist/gitbuddy-$RELEASE_VERSION-darwin-arm64" \
+            dist/SHA256SUMS dist/THIRD_PARTY_NOTICES.txt dist/install.sh
+          verify_tag
+          echo 'Draft created. Inspect its assets before manually publishing a prerelease for download testing.' >> "$GITHUB_STEP_SUMMARY"

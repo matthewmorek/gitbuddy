@@ -1,37 +1,33 @@
 # Third-party notices
 
-Standalone builds embed the installed dependency license texts, available with
+Gitbuddy's original code is MIT-licensed, copyright (c) 2026 matthewmorek; see
+`LICENSE`. Third-party code, assets and runtime components retain their own
+licenses.
+
+Standalone Go builds embed the resolved Go dependency license texts, available with
 `gitbuddy --licenses` and in the accompanying `THIRD_PARTY_NOTICES.txt` asset.
-The inventory includes build-only packages conservatively. It is not legal
-clearance for redistribution.
+The inventory includes module-level notices conservatively and the Go runtime
+license. Preserve the notices when redistributing.
 
-The embedded Bun 1.4.4 runtime has its own MIT and third-party licenses, including
-LGPL JavaScriptCore/WebKit; see its [license inventory and rebuild instructions](https://github.com/oven-sh/bun/blob/bun-v1.4.4/LICENSE.md).
-OpenTUI 0.8.1's native library statically links LGPL-2.1-or-later FFmpeg 9.0.2;
-its `LICENSE-FFMPEG` and `FFMPEG-SOURCE.md` are included in the generated inventory.
-Preserve the corresponding upstream source/rebuild materials when redistributing.
-Release preparation must assess these obligations; checksums and tests do not
-establish license compliance.
+The application uses Bubble Tea v2, Lip Gloss v2 and Bubbles v2 under their MIT
+licenses, plus the transitive Go modules recorded in `go.mod`/`go.sum` and the
+generated inventory. The Go executable does not embed the former Bun/OpenTUI
+runtime, JavaScriptCore, TinyCC or FFmpeg. Old development binaries are not part
+of the Go release bundle.
 
-## Bundled OpenCode themes and spinner
+## Bundled OpenCode palettes
 
-Gitbuddy bundles the OpenCode, Tokyo Night, and Catppuccin theme documents from
-OpenCode **v2.2.7**. Only JSON whitespace has been changed; theme values are
-unchanged. Legacy documents are migrated at runtime by `@opencode/theme/tui`.
-The theme assets do not bundle OpenCode context providers. `src/spinner.tsx`
-also adapts OpenCode v2.2.7's ten braille frames and renderable animation logic,
-using OpenTUI's shared animation clock. The adaptation fixes the glyph width and
-frame interval (one cell, 80 ms), accepts the caller's theme color, and omits
-upstream custom frame/generator support. No private OpenCode application imports
-are required.
+Gitbuddy adapts the OpenCode, Tokyo Night and Catppuccin palettes from OpenCode
+**v2.2.7** into seven light/dark color roles. This is not the original theme schema
+or parser: active surfaces are selected to remain darker than inactive panels.
+No OpenCode context providers, TypeScript theme engine or spinner implementation
+are included. Animation comes from Bubbles.
 
 | Local file | Upstream source |
 | --- | --- |
-| `src/themes/opencode.json` | https://raw.githubusercontent.com/anomalyco/opencode/v2.2.7/packages/tui/src/theme/assets/v2/opencode.json |
-| `src/themes/tokyonight.json` | https://raw.githubusercontent.com/anomalyco/opencode/v2.2.7/packages/tui/src/theme/assets/tokyonight.json |
-| `src/themes/catppuccin.json` | https://raw.githubusercontent.com/anomalyco/opencode/v2.2.7/packages/tui/src/theme/assets/catppuccin.json |
-| `src/spinner.tsx` (frames) | https://raw.githubusercontent.com/anomalyco/opencode/v2.2.7/packages/tui/src/component/spinner-frames.ts |
-| `src/spinner.tsx` (renderable adaptation) | https://raw.githubusercontent.com/anomalyco/opencode/v2.2.7/packages/tui/src/component/spinner-renderable.ts |
+| `internal/palette/themes/opencode.json` | https://raw.githubusercontent.com/anomalyco/opencode/v2.2.7/packages/tui/src/theme/assets/v2/opencode.json |
+| `internal/palette/themes/tokyonight.json` | https://raw.githubusercontent.com/anomalyco/opencode/v2.2.7/packages/tui/src/theme/assets/tokyonight.json |
+| `internal/palette/themes/catppuccin.json` | https://raw.githubusercontent.com/anomalyco/opencode/v2.2.7/packages/tui/src/theme/assets/catppuccin.json |
 
 Upstream license: https://raw.githubusercontent.com/anomalyco/opencode/v2.2.7/LICENSE
 
