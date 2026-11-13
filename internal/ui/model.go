@@ -72,18 +72,19 @@ type Model struct {
 	input                                                 textinput.Model
 	choice, errorTop                                      int
 	spinner                                               spinner.Model
+	updates                                               appUpdates
 }
 
-func New(ctx context.Context, repo gitrepo.Repo, settings *preferences.Store, themes *palette.Catalog) *Model {
+func New(ctx context.Context, repo gitrepo.Repo, settings *preferences.Store, themes *palette.Catalog, updates UpdateService, automaticUpdates bool) *Model {
 	input := textinput.New()
 	input.Prompt = ""
 	input.Placeholder = "Search commands"
 	input.SetVirtualCursor(true)
-	return &Model{ctx: ctx, repo: repo, settings: settings, themes: themes, width: 80, height: 24, dark: true, focus: "history", scope: gitrepo.All, input: input, spinner: spinner.New(spinner.WithSpinner(spinner.MiniDot))}
+	return &Model{ctx: ctx, repo: repo, settings: settings, themes: themes, width: 80, height: 24, dark: true, focus: "history", scope: gitrepo.All, input: input, spinner: spinner.New(spinner.WithSpinner(spinner.MiniDot)), updates: newAppUpdates(updates, automaticUpdates)}
 }
 
 func (m *Model) Init() tea.Cmd {
-	return tea.Batch(m.refresh(m.scope), tea.RequestBackgroundColor, m.spinner.Tick)
+	return tea.Batch(m.refresh(m.scope), tea.RequestBackgroundColor, m.spinner.Tick, m.startUpdateCheck())
 }
 
 func (m *Model) refresh(scope gitrepo.Scope) tea.Cmd {
@@ -178,7 +179,7 @@ func (m *Model) schedule() tea.Cmd {
 }
 
 func (m *Model) mutate(mode string) tea.Cmd {
-	if m.operation != "" || m.closing {
+	if m.operation != "" || m.closing || m.updates.installing {
 		return nil
 	}
 	fetch := mode == "fetch"
@@ -206,7 +207,10 @@ func (m *Model) mutate(mode string) tea.Cmd {
 func (m *Model) quit() tea.Cmd {
 	m.closing = true
 	m.timer++
-	if m.operation == "" {
+	if m.updates.cancel != nil {
+		m.updates.cancel()
+	}
+	if m.operation == "" && !m.updates.installing {
 		return tea.Quit
 	}
 	return nil
@@ -219,7 +223,10 @@ func (m *Model) fail(err error) {
 
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case updateStartupMsg, updateCheckMsg, updateInstallMsg:
+		return m, m.updateMessage(msg)
 	case QuitMsg:
+		m.updates.restart = false
 		return m, m.quit()
 	case tea.WindowSizeMsg:
 		m.width = max(1, msg.Width)
@@ -324,11 +331,14 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		if m.closing {
+			if m.updates.installing {
+				return m, nil
+			}
 			return m, tea.Quit
 		}
 		return m, tea.Batch(m.refresh(m.scope), m.spinner.Tick)
 	case spinner.TickMsg:
-		if m.activity() == "" && !m.slowDetails {
+		if m.activity() == "" && !m.slowDetails && !m.updateBusy() {
 			return m, nil
 		}
 		var cmd tea.Cmd
@@ -410,7 +420,7 @@ func (m *Model) activity() string {
 	return ""
 }
 func (m *Model) warnings() string {
-	all := []string{m.failure, m.settings.Warning}
+	all := []string{m.failure, m.settings.Warning, m.updates.failure}
 	all = append(all, m.status.FetchWarnings...)
 	all = append(all, m.themes.Warnings...)
 	var out []string
@@ -529,6 +539,11 @@ type action struct{ id, title, category, value, disabled, shortcut string }
 func (m *Model) options() []action {
 	var options []action
 	switch m.dialog {
+	case "confirm-update":
+		options = []action{
+			{id: "cancel-update", title: "Cancel", category: "App"},
+			{id: "confirm-update", title: "Install Gitbuddy " + m.updates.available.Version, category: "App", disabled: m.updateInstallDisabled()},
+		}
 	case "themes":
 		for _, name := range m.themes.Names {
 			options = append(options, action{id: "theme", title: name, category: "Settings › Theme", value: name})
@@ -541,6 +556,8 @@ func (m *Model) options() []action {
 		busy := ""
 		if m.operation != "" {
 			busy = "A Git operation is already running"
+		} else if m.updates.installing {
+			busy = "Wait for the update installation to finish"
 		}
 		fetch := busy
 		if fetch == "" && len(m.status.Remotes) == 0 {
@@ -560,6 +577,10 @@ func (m *Model) options() []action {
 			}
 		}
 		options = []action{{id: "fetch", title: "Fetch now", category: "Git", disabled: fetch}, {id: "ff-only", title: "Pull — fast-forward only", category: "Git", disabled: pull}, {id: "merge", title: "Pull — merge", category: "Git", disabled: pull}, {id: "rebase", title: "Pull — rebase", category: "Git", disabled: pull}, {id: "refresh", title: "Refresh local history", category: "History", shortcut: "r"}, {id: "all", title: "All branches", category: "History"}, {id: "current", title: "Current branch", category: "History"}, {id: "settings", title: "Open settings", category: "Settings"}, {id: "auto", title: "Automatic fetch enabled", category: "Settings › Fetch", value: strconv.FormatBool(m.settings.Value.AutoFetch)}, {id: "interval", title: "Automatic fetch interval", category: "Settings › Fetch", value: fmt.Sprintf("%d min", m.settings.Value.FetchIntervalMinutes)}, {id: "max", title: "Maximum commits", category: "Settings › History", value: strconv.Itoa(m.settings.Value.MaxCommits)}, {id: "themes", title: "Theme", category: "Settings › Appearance", value: m.settings.Value.Theme}, {id: "modes", title: "Color mode", category: "Settings › Appearance", value: m.settings.Value.ColorMode}, {id: "errors", title: "Show errors and warnings", category: "Status"}, {id: "clear", title: "Clear error", category: "Status"}, {id: "quit", title: "Quit", category: "App", shortcut: "q"}}
+		// Keep Quit last, including in compact palettes navigated to the end.
+		quit := options[len(options)-1]
+		options = append(options[:len(options)-1], m.updateActions()...)
+		options = append(options, quit)
 	}
 	var result []action
 	for _, a := range options {
@@ -589,6 +610,21 @@ func matches(query, text string) bool {
 }
 func (m *Model) execute(a action) tea.Cmd {
 	switch a.id {
+	case "check-updates":
+		return m.checkUpdates(true)
+	case "install-update":
+		if !m.closing && m.updateInstallDisabled() == "" {
+			return m.openDialog("confirm-update", "")
+		}
+	case "confirm-update":
+		return m.installUpdate()
+	case "cancel-update":
+		return nil
+	case "restart":
+		if m.updates.installed != "" {
+			m.updates.restart = true
+			return m.quit()
+		}
 	case "fetch", "ff-only", "merge", "rebase":
 		return m.mutate(a.id)
 	case "refresh":
@@ -615,6 +651,11 @@ func (m *Model) execute(a action) tea.Cmd {
 		return m.save(next)
 	case "clear":
 		m.failure = ""
+		if m.updates.failure != "" {
+			m.updates.failure = ""
+			m.updates.status = ""
+		}
+		m.ensureVisible()
 	case "quit":
 		return m.quit()
 	}

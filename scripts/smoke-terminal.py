@@ -31,6 +31,9 @@ binary_source = arguments.binary.resolve() if arguments.binary else None
 expected_version = (PROJECT / "internal/buildinfo/version.txt").read_text().strip()
 scratch = Path(tempfile.gettempdir()) / "opencode"
 scratch = scratch if scratch.is_dir() else Path(tempfile.gettempdir())
+# macOS exposes the temp directory through /var -> /private/var. Choose the
+# physical fixture path up front; the updater correctly refuses symlink ancestors.
+scratch = scratch.resolve()
 
 
 def git(repo, *args, data=None):
@@ -60,6 +63,8 @@ def exercise(root, repo, width, mode, executable, isolated):
         "XDG_CONFIG_HOME": str(config.parent),
         "GIT_CONFIG_GLOBAL": "/dev/null",
         "GIT_CONFIG_SYSTEM": "/dev/null",
+        # Offline PTY checks must never contact the live release catalogue.
+        "GITBUDDY_NO_UPDATE_CHECK": "1",
     }
     if isolated:
         env = {
@@ -155,6 +160,21 @@ def exercise(root, repo, width, mode, executable, isolated):
             "Theme picker did not persist its selection"
         )
         send(b"\x10")
+        update_start = len(output)
+        send(b"install update")
+        update_frame = output[update_start:]
+        assert b"Install update" in update_frame, "Update command is missing"
+        if isolated:
+            assert b"Check for a newer stable release first" in update_frame, (
+                "Release-built fixture did not qualify for safe self-update"
+            )
+        else:
+            assert (
+                b"self-update is only available in official release builds"
+                in update_frame
+            ), "Source build did not block self-replacement"
+        send(b"\x1b", 0.2)
+        send(b"\x10")
         send(b"\x1b", 0.2)  # Plain Escape, including its terminal ambiguity timeout.
         send(b"\x1b[B")
         send(b"\t")
@@ -179,7 +199,7 @@ def exercise(root, repo, width, mode, executable, isolated):
             "Runtime error in PTY"
         )
         print(
-            f"PASS {'binary (no Go/Bun/Node)' if isolated else 'source'} PTY {width}x32, {mode}, 1200 commits: loading/palette/theme/plain Escape/paging/quit/restoration"
+            f"PASS {'binary (no Go/Bun/Node)' if isolated else 'source'} PTY {width}x32, {mode}, 1200 commits: loading/palette/theme/update eligibility/plain Escape/paging/quit/restoration"
         )
     finally:
         evidence = PROJECT / ".verification"

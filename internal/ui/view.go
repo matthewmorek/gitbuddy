@@ -38,10 +38,14 @@ func faded(c palette.Colors) palette.Colors {
 	return palette.Colors{Background: dim(c.Background), Panel: dim(c.Panel), Active: dim(c.Active), Selection: dim(c.Selection), Text: dim(c.Text), Muted: dim(c.Muted), Accent: dim(c.Accent)}
 }
 func (m *Model) footerHeight() int {
+	height := 2
 	if m.warnings() != "" {
-		return 3
+		height++
 	}
-	return 2
+	if m.updates.status != "" {
+		height++
+	}
+	return height
 }
 func (m *Model) paneHeight() int  { return max(1, m.height-4-m.footerHeight()) }
 func (m *Model) visibleRows() int { return max(1, (m.paneHeight()-4)/2) }
@@ -196,6 +200,13 @@ func (m *Model) baseView(c palette.Colors) string {
 		status += " · waiting to quit"
 	}
 	footer := padded(status, c.Muted, c.Background)
+	if m.updates.status != "" {
+		update := safeLine(m.updates.status)
+		if m.updateBusy() {
+			update = m.loadingLabel(update, c)
+		}
+		footer += "\n" + padded(update, c.Accent, c.Background)
+	}
 	if m.warnings() != "" {
 		footer += "\n" + padded(safeLine(strings.Split(m.warnings(), "\n")[0])+" · Ctrl+P → Show errors and warnings", c.Muted, c.Background)
 	}
@@ -224,6 +235,8 @@ func (m *Model) dialogView(c palette.Colors, width, height int) string {
 	add := func(text string) { rows = append(rows, line(text, inner, c.Text, c.Panel, false)) }
 	title := "Commands"
 	switch m.dialog {
+	case "confirm-update":
+		title = "Install update · restart is optional"
 	case "settings":
 		title = "Settings"
 	case "themes":

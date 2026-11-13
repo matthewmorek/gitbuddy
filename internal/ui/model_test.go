@@ -43,7 +43,7 @@ func setup(t *testing.T, count int) (*Model, *fakeRepository) {
 	}
 	settings := preferences.Load(t.TempDir())
 	settings.Value.AutoFetch = false
-	m := New(context.Background(), repo, settings, palette.Load(settings.Directory))
+	m := New(context.Background(), repo, settings, palette.Load(settings.Directory), nil, false)
 	m.width = 120
 	m.height = 32
 	m.Update(m.refresh(gitrepo.All)())

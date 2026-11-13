@@ -134,7 +134,15 @@ def main():
     filename = f"gitbuddy-{version}-darwin-arm64"
     binary = outdir / filename
     go_output(
-        "build", "-trimpath", "-buildvcs=false", "-o", str(binary), "./cmd/gitbuddy"
+        "build",
+        "-trimpath",
+        "-buildvcs=false",
+        "-ldflags",
+        "-X github.com/matthewmorek/gitbuddy/internal/buildinfo.Distribution="
+        + ("release" if args.release else "source"),
+        "-o",
+        str(binary),
+        "./cmd/gitbuddy",
     )
     binary.chmod(0o755)
     result = subprocess.run(

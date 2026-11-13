@@ -27,6 +27,8 @@ def step_script(name):
 
 
 DRAFT = step_script("Create draft without changing tags or existing releases")
+VALIDATE = step_script("Validate stable tag input")
+VERIFY = step_script("Check repository, architecture, tag and source version agree")
 GH = r"""#!/bin/bash
 set -eu
 printf '%s\n' "$@" >> "$FIXTURE_ROOT/arguments"
@@ -49,10 +51,25 @@ elif [ "$1" = release ] && [ "$2" = create ]; then
 else exit 91
 fi
 """
+GIT = r"""#!/bin/bash
+set -eu
+case "$*" in
+  "remote get-url origin")
+    if [ "$FIXTURE_FAILURE" = origin ]; then echo https://example.invalid/wrong; else echo https://github.com/matthewmorek/gitbuddy; fi;;
+  "rev-parse HEAD") printf '%040d\n' 1;;
+  "rev-parse event-sha^{commit}")
+    if [ "$FIXTURE_FAILURE" = event ]; then printf '%040d\n' 2; else printf '%040d\n' 1; fi;;
+  "rev-parse refs/tags/v0.1.0^{commit}")
+    if [ "$FIXTURE_FAILURE" = tag ]; then printf '%040d\n' 2; else printf '%040d\n' 1; fi;;
+  "rev-parse refs/tags/v0.1.0") echo annotated-tag-object;;
+  "merge-base --is-ancestor HEAD refs/remotes/origin/main") [ "$FIXTURE_FAILURE" != main ];;
+  *) exit 90;;
+esac
+"""
 
 
 class WorkflowTests(unittest.TestCase):
-    def run_draft(self, failure=""):
+    def run_draft(self, failure="", version="0.1.0"):
         temp = tempfile.TemporaryDirectory(prefix="gitbuddy-draft-")
         self.addCleanup(temp.cleanup)
         root = Path(temp.name).resolve()
@@ -69,8 +86,8 @@ class WorkflowTests(unittest.TestCase):
                 "RUNNER_TEMP": str(root),
                 "GITHUB_STEP_SUMMARY": str(root / "summary"),
                 "GITHUB_REPOSITORY": "matthewmorek/gitbuddy",
-                "RELEASE_TAG": "v0.1.0",
-                "RELEASE_VERSION": "0.1.0",
+                "RELEASE_TAG": "v" + version,
+                "RELEASE_VERSION": version,
                 "EXPECTED_TAG_OID": "a" * 40,
                 "FIXTURE_ROOT": str(root),
                 "FIXTURE_FAILURE": failure,
@@ -105,26 +122,37 @@ class WorkflowTests(unittest.TestCase):
         self.assertNotIn("--target", args)
         self.assertEqual(args.count("create"), 1)
 
-    def test_manual_trusted_main_only_and_readonly_build(self):
+    def test_subsequent_release_stays_draft_without_prerelease_flag(self):
+        _, result, args, created = self.run_draft(version="0.1.1")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(created)
+        for flag in ["--verify-tag", "--draft", "--latest=false"]:
+            self.assertIn(flag, args)
+        self.assertNotIn("--prerelease", args)
+        self.assertIn("dist/gitbuddy-0.1.1-darwin-arm64", args)
+        self.assertNotIn("edit", args)
+
+    def test_only_new_version_tag_pushes_and_readonly_build(self):
         text = WORKFLOW.read_text()
         trigger = text.split("on:\n", 1)[1].split("\nconcurrency:", 1)[0]
-        self.assertEqual(
-            re.findall(r"^  ([a-z_]+):", trigger, re.M), ["workflow_dispatch"]
-        )
-        self.assertIn("        default: false\n        type: boolean", trigger)
+        self.assertEqual(re.findall(r"^  ([a-z_]+):", trigger, re.M), ["push"])
+        self.assertIn("    tags:\n      - 'v*'", trigger)
+        self.assertNotIn("branches:", trigger)
         self.assertIn(
-            "group: release-${{ inputs.tag }}\n  cancel-in-progress: false", text
+            "group: release-${{ github.ref }}\n  cancel-in-progress: false", text
         )
         build = text.split("  macos-arm64:\n", 1)[1].split("\n  draft:", 1)[0]
         self.assertIn(
-            "github.repository == 'matthewmorek/gitbuddy' && github.ref == 'refs/heads/main'",
+            "github.repository == 'matthewmorek/gitbuddy' && github.event.created && !github.event.deleted && !github.event.forced",
             build,
         )
         self.assertIn("permissions:\n  contents: read", text)
         self.assertNotIn("contents: write", build)
         self.assertIn("runs-on: macos-15", build)
         self.assertIn("go-version-file: go.mod", build)
-        self.assertIn("ref: ${{ inputs.tag }}", build)
+        self.assertIn("RELEASE_TAG: ${{ github.ref_name }}", build)
+        self.assertIn("ref: ${{ github.sha }}", build)
+        self.assertIn("fetch-depth: 0", build)
         self.assertIn("persist-credentials: false", build)
         for command in [
             "go test ./...",
@@ -149,22 +177,103 @@ class WorkflowTests(unittest.TestCase):
             ],
         )
         draft = text.split("\n  draft:\n", 1)[1]
-        self.assertIn("if: inputs.create_draft", draft)
+        self.assertNotIn("inputs.", text)
         self.assertIn("needs: macos-arm64", draft)
         self.assertIn("ref: ${{ needs.macos-arm64.outputs.commit }}", draft)
         self.assertIn("persist-credentials: false", draft)
         self.assertNotIn("setup-go", draft)
         self.assertNotIn("run-id:", draft)
 
+    def test_tag_validation_rejects_nonstable_and_ambiguous_versions(self):
+        for tag, valid in [
+            ("v0.1.0", True),
+            ("v12.3.456", True),
+            ("v01.1.0", False),
+            ("v0.1.0-rc.1", False),
+            ("v0.1.0+build", False),
+            ("0.1.0", False),
+            ("v0.1.0\n", False),
+            ("v0.1.0; echo unsafe", False),
+        ]:
+            with self.subTest(tag=tag):
+                result = subprocess.run(
+                    ["/bin/bash", "-c", VALIDATE],
+                    env={"RELEASE_TAG": tag},
+                    capture_output=True,
+                    text=True,
+                )
+                self.assertEqual(result.returncode == 0, valid, result.stderr)
+
+    def test_source_preflight_binds_event_tag_main_and_version(self):
+        # Execute the actual shell with offline Git/platform boundaries. This
+        # tests fail-closed ordering, not GitHub's hosted event/checkout behavior.
+        import os
+        import sys
+
+        for failure in ["", "origin", "event", "tag", "main", "version", "arch"]:
+            with (
+                self.subTest(failure=failure),
+                tempfile.TemporaryDirectory(
+                    prefix="gitbuddy-release-source-"
+                ) as directory,
+            ):
+                root = Path(directory)
+                tools = root / "tools"
+                tools.mkdir()
+                for name, body in [
+                    ("git", GIT),
+                    (
+                        "uname",
+                        "#!/bin/bash\necho "
+                        + ("x86_64" if failure == "arch" else "arm64"),
+                    ),
+                ]:
+                    tool = tools / name
+                    tool.write_text(body)
+                    tool.chmod(0o755)
+                (tools / "python3").symlink_to(sys.executable)
+                version = root / "internal/buildinfo/version.txt"
+                version.parent.mkdir(parents=True)
+                version.write_text("0.2.0\n" if failure == "version" else "0.1.0\n")
+                output = root / "output"
+                result = subprocess.run(
+                    ["/bin/bash", "-c", VERIFY],
+                    cwd=root,
+                    env={
+                        **os.environ,
+                        "PATH": f"{tools}:/usr/bin:/bin",
+                        "RELEASE_TAG": "v0.1.0",
+                        "GITHUB_SHA": "event-sha",
+                        "GITHUB_OUTPUT": str(output),
+                        "FIXTURE_FAILURE": failure,
+                    },
+                    capture_output=True,
+                    text=True,
+                    timeout=20,
+                )
+                self.assertEqual(result.returncode == 0, not failure, result.stderr)
+                if failure:
+                    self.assertFalse(
+                        output.exists(),
+                        "Rejected source must not produce release outputs",
+                    )
+                else:
+                    self.assertEqual(
+                        output.read_text(),
+                        f"commit={1:040d}\ntag_oid=annotated-tag-object\nversion=0.1.0\n",
+                    )
+
     def test_verification_shell_syntax_and_raw_tag_oid(self):
-        script = step_script(
-            "Check repository, architecture, tag and source version agree"
-        )
+        script = VERIFY
         self.assertIn("git remote get-url origin", script)
+        self.assertIn('"$GITHUB_SHA^{commit}"', script)
         self.assertIn("refs/tags/$RELEASE_TAG^{commit}", script)
+        self.assertIn(
+            "git merge-base --is-ancestor HEAD refs/remotes/origin/main", script
+        )
         self.assertIn('tag_oid=$(git rev-parse "refs/tags/$RELEASE_TAG")', script)
         self.assertIn("internal/buildinfo/version.txt", script)
-        for body in [script, DRAFT]:
+        for body in [VALIDATE, script, DRAFT]:
             result = subprocess.run(
                 ["/bin/bash", "-n"], input=body, text=True, capture_output=True
             )

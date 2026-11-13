@@ -8,6 +8,8 @@
 - Existing settings retained; custom themes use a smaller seven-color dark/light schema.
 - Configurable periodic fetching and explicit fast-forward, merge and rebase pulls.
 - Standalone macOS arm64 build and a checksum-verified shell installer/updater.
+- Background stable-release checks, confirmed in-TUI updates and optional restart.
+- Version-tag pushes create verified release drafts; publication remains manual.
 - Quiet local commit navigation, accent selection markers and delayed details loading indicators.
 
 **Unsigned macOS arm64 build:** this release is not Developer ID signed or notarized.

@@ -42,8 +42,43 @@ The first release is deliberately **unsigned and not notarized**; macOS may bloc
 execution. An actual downloaded-install check remains a publication prerequisite;
 local execution does not establish Gatekeeper acceptance. See
 [release preparation and installation](docs/RELEASING.md) for exact commands,
-failure guarantees and the manual build → optional draft → prerelease testing →
-stable promotion flow. Ordinary pushes never publish or update installed copies.
+failure guarantees and the **tag → verified draft → publish** flow. A new version
+tag triggers verification and a draft, never automatic publication. Branch pushes
+do not start releases. The first release requires a public-prerelease download
+and Gatekeeper trial before stable promotion.
+
+## Application updates
+
+After the first screen renders, Gitbuddy checks GitHub once per launch for a
+newer **stable** release. The check runs in the background, never installs
+automatically, and does not take focus or replace Git's operation status.
+Offline failures during this automatic check are quiet.
+
+Use **Ctrl+P → Check for updates** to check manually, including after reconnecting.
+A newer version appears in the footer. **Ctrl+P → Install update** asks for
+confirmation, downloads the pinned binary and checksum manifest, verifies them,
+and safely replaces an eligible user-owned installation. Settings are preserved.
+Installation waits until no Git mutation is running; new fetches/pulls are blocked
+while installing. Ordinary quit cancels the update download and waits for any
+in-progress replacement and Git operation to settle.
+
+After installation, choose **Ctrl+P → Restart**, or continue working and use the
+new version next time. Restart is never automatic: the terminal is restored and
+active Git operations finish before the process is replaced. Manual check/install
+errors are available through **Show errors and warnings**.
+
+Only release-built macOS arm64 executables installed as `gitbuddy` in a safe
+user-owned directory can replace themselves. Development builds, symlinked paths,
+and unsafe ownership/permissions require manual updating.
+Use the shell installer for explicit version pins or rollback. Checksums detect
+corruption, not a compromised release host; updating does not sign/notarize a
+binary, remove quarantine, or bypass macOS security.
+
+Set `GITBUDDY_NO_UPDATE_CHECK=1` to disable the automatic check (for example in an
+offline environment). The manual palette command remains available. This does
+not change the independent **automatic Git fetch** setting or stored preferences.
+Update discovery requires a published stable release; a tag, draft or prerelease
+does not produce an update notification.
 
 ## Keyboard
 
@@ -123,6 +158,6 @@ See [third-party notices](THIRD_PARTY_NOTICES.md) for palette provenance.
 
 ## Scope and verification
 
-One repository per process. No daemon, filesystem watcher, PR/check integration, staging, graph, patch viewer or in-app updater. Refresh after changes made by other tools. macOS is the initial target; an architecture is not supported merely because a cross-compile succeeds.
+One repository per process. No daemon, filesystem watcher, PR/check integration, staging, graph or patch viewer. Refresh after changes made by other tools. macOS is the initial target; an architecture is not supported merely because a cross-compile succeeds.
 
 Tests cover real temporary Git repositories/local remotes, asynchronous message ordering and selection, configuration integrity, themes and Bubble Tea keyboard interactions. They do not require GitHub credentials. Live terminal appearance, assistive technology, Gatekeeper and release delivery must be evaluated separately; automated rendering does not establish those guarantees.

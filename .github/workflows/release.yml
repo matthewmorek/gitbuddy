@@ -1,21 +1,13 @@
-name: Prepare release
+name: Release
 
-# Manual only. Draft creation is opt-in; this never creates tags or publishes.
+# A deliberate version-tag push requests a verified draft, never publication.
 on:
-  workflow_dispatch:
-    inputs:
-      tag:
-        description: Existing stable release tag (first release v0.1.0)
-        required: true
-        type: string
-      create_draft:
-        description: Upload verified assets to a NEW draft prerelease (never publish)
-        required: true
-        default: false
-        type: boolean
+  push:
+    tags:
+      - 'v*'
 
 concurrency:
-  group: release-${{ inputs.tag }}
+  group: release-${{ github.ref }}
   cancel-in-progress: false
 
 permissions:
@@ -23,7 +15,7 @@ permissions:
 
 jobs:
   macos-arm64:
-    if: github.repository == 'matthewmorek/gitbuddy' && github.ref == 'refs/heads/main'
+    if: github.repository == 'matthewmorek/gitbuddy' && github.event.created && !github.event.deleted && !github.event.forced
     runs-on: macos-15
     timeout-minutes: 15
     outputs:
@@ -31,14 +23,16 @@ jobs:
       tag_oid: ${{ steps.release.outputs.tag_oid }}
       version: ${{ steps.release.outputs.version }}
     env:
-      RELEASE_TAG: ${{ inputs.tag }}
+      RELEASE_TAG: ${{ github.ref_name }}
     steps:
       - name: Validate stable tag input
         shell: bash
-        run: '[[ "$RELEASE_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]'
+        run: |
+          [[ "$RELEASE_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.tag }}
+          ref: ${{ github.sha }}
+          fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-go@v6
         with:
@@ -47,9 +41,12 @@ jobs:
         id: release
         shell: bash
         run: |
+          set -euo pipefail
           test "$(uname -m)" = arm64
           test "$(git remote get-url origin)" = https://github.com/matthewmorek/gitbuddy
+          test "$(git rev-parse HEAD)" = "$(git rev-parse "$GITHUB_SHA^{commit}")"
           test "$(git rev-parse HEAD)" = "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")"
+          git merge-base --is-ancestor HEAD refs/remotes/origin/main
           test "$RELEASE_TAG" = "v$(python3 -c 'from pathlib import Path; print(Path("internal/buildinfo/version.txt").read_text().strip())')"
           echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
           echo "tag_oid=$(git rev-parse "refs/tags/$RELEASE_TAG")" >> "$GITHUB_OUTPUT"
@@ -73,7 +70,7 @@ jobs:
         run: python3 scripts/check-release.py "$RELEASE_TAG"
       - uses: actions/upload-artifact@v4
         with:
-          name: gitbuddy-${{ inputs.tag }}-darwin-arm64
+          name: gitbuddy-${{ github.ref_name }}-darwin-arm64
           path: |
             dist/gitbuddy-${{ steps.release.outputs.version }}-darwin-arm64
             dist/SHA256SUMS
@@ -82,14 +79,13 @@ jobs:
           if-no-files-found: error
 
   draft:
-    if: inputs.create_draft
     needs: macos-arm64
     runs-on: macos-15
     timeout-minutes: 10
     permissions:
       contents: write
     env:
-      RELEASE_TAG: ${{ inputs.tag }}
+      RELEASE_TAG: ${{ github.ref_name }}
       RELEASE_VERSION: ${{ needs.macos-arm64.outputs.version }}
       EXPECTED_TAG_OID: ${{ needs.macos-arm64.outputs.tag_oid }}
     steps:
@@ -99,7 +95,7 @@ jobs:
           persist-credentials: false
       - uses: actions/download-artifact@v4
         with:
-          name: gitbuddy-${{ inputs.tag }}-darwin-arm64
+          name: gitbuddy-${{ github.ref_name }}-darwin-arm64
           path: dist
       - name: Revalidate transferred bundle and prepare notes
         run: python3 scripts/check-release.py "$RELEASE_TAG" > "$RUNNER_TEMP/gitbuddy-release-notes.md"
@@ -118,11 +114,14 @@ jobs:
           # published-release lookup alone cannot safely establish absence.
           gh api --hostname github.com --method GET --paginate --slurp "repos/$GITHUB_REPOSITORY/releases?per_page=100" > "$RUNNER_TEMP/gitbuddy-releases.json"
           python3 -c 'import json, os, sys; releases=[r for page in json.load(open(sys.argv[1])) for r in page]; sys.exit("Release already exists; inspect it manually, do not overwrite or retry uploads.") if any(r["tag_name"] == os.environ["RELEASE_TAG"] for r in releases) else None' "$RUNNER_TEMP/gitbuddy-releases.json"
+          flags=(--verify-tag --draft --latest=false)
+          # The first unsigned release needs a public download/Gatekeeper trial.
+          if [ "$RELEASE_VERSION" = 0.1.0 ]; then flags+=(--prerelease); fi
           gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
-            --verify-tag --draft --prerelease --latest=false \
+            "${flags[@]}" \
             --title "Gitbuddy $RELEASE_VERSION" \
             --notes-file "$RUNNER_TEMP/gitbuddy-release-notes.md" \
             "dist/gitbuddy-$RELEASE_VERSION-darwin-arm64" \
             dist/SHA256SUMS dist/THIRD_PARTY_NOTICES.txt dist/install.sh
           verify_tag
-          echo 'Draft created. Inspect its assets before manually publishing a prerelease for download testing.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Verified draft created. Inspect its assets before publishing. For 0.1.0, keep prerelease enabled for the download/Gatekeeper trial before stable promotion.' >> "$GITHUB_STEP_SUMMARY"

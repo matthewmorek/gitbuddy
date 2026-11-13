@@ -14,6 +14,7 @@ import (
 	"github.com/matthewmorek/gitbuddy/internal/palette"
 	"github.com/matthewmorek/gitbuddy/internal/preferences"
 	"github.com/matthewmorek/gitbuddy/internal/ui"
+	"github.com/matthewmorek/gitbuddy/internal/updater"
 )
 
 func run() error {
@@ -51,7 +52,23 @@ func run() error {
 	}
 	settings := preferences.Load("")
 	themes := palette.Load(settings.Directory)
-	program := tea.NewProgram(ui.New(ctx, repo, settings, themes), tea.WithoutSignalHandler())
+	updates := updater.New(buildinfo.Version(), buildinfo.Distribution == "release")
+	model := ui.New(ctx, repo, settings, themes, updates, os.Getenv("GITBUDDY_NO_UPDATE_CHECK") != "1")
+	restart, err := runProgram(model)
+	cancel()
+	if err != nil {
+		return err
+	}
+	if restart {
+		return updates.Restart()
+	}
+	return nil
+}
+
+// Return through this boundary before exec so terminal and signal cleanup finish
+// even when a requested restart replaces the process rather than returning.
+func runProgram(model *ui.Model) (bool, error) {
+	program := tea.NewProgram(model, tea.WithoutSignalHandler())
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)
 	defer signal.Stop(signals)
@@ -67,8 +84,8 @@ func run() error {
 			}
 		}
 	}()
-	_, err = program.Run()
-	return err
+	_, err := program.Run()
+	return model.RestartRequested(), err
 }
 
 func main() {
