@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Build a native darwin/arm64 or linux/amd64 bundle from cached Go sources.
+"""Compile a darwin/arm64 or linux/amd64 bundle from cached Go sources.
 
 Before this offline step, resolve executable dependencies for BOTH targets:
   GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 go list -mod=readonly -deps ./cmd/gitbuddy
   GOOS=linux GOARCH=amd64 GOAMD64=v1 CGO_ENABLED=0 go list -mod=readonly -deps ./cmd/gitbuddy
-Use the same source and Go toolchain on both native builders.
+Use the same source and exact Go toolchain for both targets. Compilation never
+executes the output; verify it separately on its native host.
 """
 
 import argparse
@@ -40,7 +41,10 @@ def native_target():
 def go_output(*args, target=None):
     # Never change manifests or fetch missing source here. Native tests alone may
     # not cache the other target's dependencies; resolve both target lists first.
-    goos, goarch = (target or native_target()).split("-")
+    target = target or native_target()
+    if target not in TARGETS:
+        raise ValueError("Unsupported build target.")
+    goos, goarch = target.split("-")
     env = dict(
         os.environ,
         CGO_ENABLED="0",
@@ -111,9 +115,9 @@ def module_notices():
     return sections
 
 
-def generate_notices():
-    goroot = Path(go_output("env", "GOROOT").strip())
-    runtime = go_output("env", "GOVERSION").strip()
+def generate_notices(target=None):
+    goroot = Path(go_output("env", "GOROOT", target=target).strip())
+    runtime = go_output("env", "GOVERSION", target=target).strip()
     return (
         "\n".join(
             [
@@ -129,13 +133,33 @@ def generate_notices():
     )
 
 
-def main():
+def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--release", action="store_true", help="Require a stable X.Y.Z source version"
     )
-    args = parser.parse_args()
-    target = native_target()
+    parser.add_argument(
+        "--target", choices=TARGETS, help="Cross-compile this target; requires --output"
+    )
+    parser.add_argument(
+        "--output",
+        type=Path,
+        help="Fresh bundle directory (parent must exist); default: native dist",
+    )
+    args = parser.parse_args(argv)
+    if args.target and args.output is None:
+        parser.error("--target requires a separate --output directory")
+    target = args.target or native_target()
+    outdir = args.output.absolute() if args.output is not None else ROOT / "dist"
+    # Explicit bundles must never replace another target's checksum manifest.
+    # Reject bad paths before generating notices or compiling anything.
+    if args.output is not None:
+        if os.path.lexists(outdir):
+            raise ValueError("Explicit output directory must be fresh.")
+        if not outdir.parent.is_dir():
+            raise ValueError("Output parent must be an existing directory.")
+    elif outdir.is_symlink() or (outdir.exists() and not outdir.is_dir()):
+        raise ValueError("Native dist must be a non-symlink directory.")
     version = (ROOT / "internal/buildinfo/version.txt").read_text().strip()
     stable = re.fullmatch(STABLE, version)
     # Development versions use canonical SemVer prerelease identifiers, without
@@ -149,10 +173,9 @@ def main():
         raise ValueError(
             "Release builds require a stable internal/buildinfo/version.txt version."
         )
-    notices = generate_notices()
+    notices = generate_notices(target=target)
     (ROOT / "internal/buildinfo/notices.txt").write_text(notices, encoding="utf-8")
-    outdir = ROOT / "dist"
-    outdir.mkdir(exist_ok=True)
+    outdir.mkdir(exist_ok=args.output is None)
     filename = f"gitbuddy-{version}-{target}"
     binary = outdir / filename
     go_output(
@@ -169,17 +192,6 @@ def main():
         target=target,
     )
     binary.chmod(0o755)
-    result = subprocess.run(
-        [str(binary), "--version"],
-        cwd=outdir,
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    if result.stdout != f"gitbuddy {version}\n" or result.stderr:
-        raise ValueError(
-            "Compiled executable version does not match internal/buildinfo/version.txt."
-        )
     (outdir / "THIRD_PARTY_NOTICES.txt").write_text(notices, encoding="utf-8")
     shutil.copyfile(ROOT / "scripts/install.sh", outdir / "install.sh")
     checksums = [
@@ -188,7 +200,7 @@ def main():
     ]
     (outdir / "SHA256SUMS").write_text("\n".join(checksums) + "\n", encoding="ascii")
     print(
-        f"Built {binary}\n{checksums[0]}\nRun the binary PTY smoke test before advertising this artifact."
+        f"Built {binary}\n{checksums[0]}\nValidate the bundle, then run the binary PTY smoke test on its native host before advertising this artifact."
     )
 
 

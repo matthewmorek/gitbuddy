@@ -276,6 +276,106 @@ class AssemblyTests(unittest.TestCase):
 
 
 class BuildTargetTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix="gitbuddy-build-")
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        (self.root / "internal/buildinfo").mkdir(parents=True)
+        (self.root / "internal/buildinfo/version.txt").write_text(VERSION + "\n")
+        (self.root / "scripts").mkdir()
+        (self.root / "scripts/install.sh").write_text("installer\n")
+
+    def compile(self, *args, target):
+        self.assertEqual(args[0], "build")
+        self.assertIn("-trimpath", args)
+        self.assertIn("-buildvcs=false", args)
+        self.assertIn("-buildmode=exe", args)
+        self.assertIn(
+            "-X github.com/matthewmorek/gitbuddy/internal/buildinfo.Distribution=release",
+            args,
+        )
+        Path(args[args.index("-o") + 1]).write_bytes(target.encode())
+        return ""
+
+    def test_explicit_targets_ignore_host_and_never_execute_output(self):
+        with (
+            patch.object(build, "ROOT", self.root),
+            patch.object(
+                build, "native_target", side_effect=AssertionError("host queried")
+            ),
+            patch.object(build, "generate_notices", return_value="union notices\n"),
+            patch.object(build, "go_output", side_effect=self.compile),
+            patch.object(
+                build.subprocess, "run", side_effect=AssertionError("binary executed")
+            ),
+            redirect_stdout(io.StringIO()),
+        ):
+            for target in build.TARGETS:
+                directory = self.root / target
+                build.main(
+                    ["--release", "--target", target, "--output", str(directory)]
+                )
+                result = release.verify_release_bundle(
+                    directory, VERSION, CHANGELOG, target=target
+                )
+                self.assertEqual(
+                    result["assets"], release.release_assets(VERSION, target)
+                )
+            # The second build must not replace the first bundle's manifest.
+            self.assertEqual(
+                (self.root / "darwin-arm64" / BINARY).read_bytes(), b"darwin-arm64"
+            )
+            self.assertNotIn(
+                LINUX_BINARY, (self.root / "darwin-arm64/SHA256SUMS").read_text()
+            )
+            self.assertFalse((self.root / "dist").exists())
+
+    def test_native_default_keeps_dist_convenience(self):
+        directory = self.root / "dist"
+        directory.mkdir()
+        (directory / "unrelated").write_text("preserved")
+        with (
+            patch.object(build, "ROOT", self.root),
+            patch.object(build, "native_target", return_value="darwin-arm64"),
+            patch.object(build, "generate_notices", return_value="union notices\n"),
+            patch.object(build, "go_output", side_effect=self.compile),
+            patch.object(
+                build.subprocess, "run", side_effect=AssertionError("binary executed")
+            ),
+            redirect_stdout(io.StringIO()),
+        ):
+            build.main(["--release"])
+        release.verify_release_bundle(
+            directory, VERSION, CHANGELOG, target="darwin-arm64"
+        )
+        self.assertEqual((directory / "unrelated").read_text(), "preserved")
+
+    def test_invalid_target_and_output_rejected_before_effects(self):
+        existing = self.root / "existing"
+        existing.mkdir()
+        link = self.root / "link"
+        link.symlink_to(self.root / "missing")
+        for argv, error in [
+            (["--target", "linux-arm64"], SystemExit),
+            (["--target", "linux-amd64"], SystemExit),
+            (["--output", str(existing)], ValueError),
+            (["--output", str(link)], ValueError),
+            (["--output", str(self.root / "missing/child")], ValueError),
+            (["--output", str(self.root / "scripts/install.sh/child")], ValueError),
+        ]:
+            with (
+                self.subTest(argv=argv),
+                patch.object(build, "ROOT", self.root),
+                patch.object(build, "native_target", return_value="darwin-arm64"),
+                patch.object(build, "generate_notices") as notices,
+                patch.object(build, "go_output") as command,
+                self.assertRaises(error),
+            ):
+                build.main(argv)
+            notices.assert_not_called()
+            command.assert_not_called()
+            self.assertFalse((self.root / "internal/buildinfo/notices.txt").exists())
+
     def test_native_targets_and_unsupported_hosts(self):
         for system, machine, expected in [
             ("Darwin", "arm64", "darwin-arm64"),

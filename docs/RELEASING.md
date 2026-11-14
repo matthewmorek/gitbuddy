@@ -2,6 +2,9 @@
 
 Gitbuddy uses **tag → verified draft → publish**. A deliberate `vX.Y.Z` tag push
 runs verification and creates a draft; a maintainer decides when to publish it.
+Linux runs the full suite and compiles both platform binaries. macOS then verifies
+and executes the exact transferred Darwin binary, without rebuilding it. Linux
+assembles the draft only after both jobs pass.
 The first release additionally requires a public prerelease trial before stable
 promotion. The installer targets
 `matthewmorek/gitbuddy`, with candidate targets macOS arm64 and Linux x86_64.
@@ -68,13 +71,16 @@ same host do not protect against compromised distribution.
 
 ## Local preparation
 
-The next patch candidate is `0.1.2`. The maintainer reported a successful
+The historical `0.1.2` preparation followed a maintainer-reported successful
 downloaded macOS installation and immediate launch of `0.1.1`, with no blockers.
 That initial installation check does not establish the still-pending installed
-upgrade and optional restart path below.
+upgrade and optional restart path below. Historical version examples later in this
+document are not instructions to reuse tags; the source version and changelog
+select the current candidate. This CI change does not bump or release a version.
 
-The candidate requires Go 1.26.7 or newer, Git and Python 3 for release work.
-Resolve dependencies read-only before offline native builds:
+Release work requires the **exact Go version in `go.mod`** (currently 1.26.7),
+Git and Python 3. On Linux, run the full checks once and resolve both executable
+dependency sets read-only before offline compilation:
 
 ```sh
 go test ./...
@@ -88,29 +94,62 @@ GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 go list -mod=readonly -deps ./cmd/gitbudd
 GOOS=linux GOARCH=amd64 GOAMD64=v1 CGO_ENABLED=0 go list -mod=readonly -deps ./cmd/gitbuddy
 ```
 
-On each native runner, use the same source and exact Go toolchain:
+Compile both targets from that same validated source and toolchain on Linux.
+Explicit targets require separate, **fresh** output directories whose parent
+already exists; existing output is rejected before notices or binaries are written.
+These commands also cross-compile on macOS, but that is not Linux-hosted evidence:
 
 ```sh
-python3 scripts/build.py --release
-# On macOS arm64:
-python3 scripts/check-release.py v0.1.2 dist --target darwin-arm64
-python3 scripts/smoke-terminal.py --binary dist/gitbuddy-0.1.2-darwin-arm64
-# On Linux x86_64, use these two commands instead:
-python3 scripts/check-release.py v0.1.2 dist --target linux-amd64
-python3 scripts/smoke-terminal.py --binary dist/gitbuddy-0.1.2-linux-amd64
+VERSION="$(cat internal/buildinfo/version.txt)"
+RELEASE_TAG="v$VERSION"
+mkdir -p .verification
+python3 scripts/build.py --release --target darwin-arm64 --output .verification/darwin-arm64
+python3 scripts/build.py --release --target linux-amd64 --output .verification/linux-amd64
+python3 scripts/check-release.py "$RELEASE_TAG" .verification/darwin-arm64 --target darwin-arm64
+python3 scripts/check-release.py "$RELEASE_TAG" .verification/linux-amd64 --target linux-amd64
+# Execute only on Linux x86_64:
+python3 scripts/smoke-terminal.py --binary ".verification/linux-amd64/gitbuddy-$VERSION-linux-amd64"
 ```
 
-The build uses `CGO_ENABLED=0`; Linux targets baseline amd64 (`GOAMD64=v1`)
-and a non-PIE binary. The target checker validates one native output. The full
-bundle checker defaults to requiring both targets, so it must not be run against
-a single host's `dist` directory. After both verified runs:
+The [Go cross-compilation model](https://go.dev/doc/install/source) supports
+`GOOS`/`GOARCH`; [disabling cgo](https://pkg.go.dev/cmd/cgo) avoids a target C
+toolchain requirement. The builder fixes `CGO_ENABLED=0`, Linux baseline amd64
+(`GOAMD64=v1`) and non-PIE executable output, read-only modules, offline resolution,
+reproducible flags and release distribution metadata. It **never executes**
+compiled output, including native output. Without `--target`/`--output`,
+`python3 scripts/build.py --release` still builds the native target in `dist`.
+Runtime version/license/PTY checks remain a separate required step.
+
+On macOS arm64, transfer the **original** Darwin bundle from the Linux build into
+`artifacts/darwin-arm64` (do not rebuild). Check it before restoring the downloaded
+binary's executable bit:
 
 ```sh
-python3 scripts/assemble-release.py v0.1.2 --darwin-arm64 artifacts/darwin-arm64 --linux-amd64 artifacts/linux-amd64 --output release-bundle
-python3 scripts/check-release.py v0.1.2 release-bundle
+VERSION="$(cat internal/buildinfo/version.txt)"
+RELEASE_TAG="v$VERSION"
+python3 scripts/check-release.py "$RELEASE_TAG" artifacts/darwin-arm64 --target darwin-arm64
+chmod 755 "artifacts/darwin-arm64/gitbuddy-$VERSION-darwin-arm64"
+python3 scripts/smoke-terminal.py --binary "artifacts/darwin-arm64/gitbuddy-$VERSION-darwin-arm64"
+go test ./internal/preferences ./internal/gitrepo ./internal/updater
+python3 scripts/test_install.py -v
 ```
 
-Assembly requires fresh output, validates both native bundles and identical
+These focused macOS checks exercise native config-directory handling, Unix Git
+process handling, updater ownership/permissions and replacement, and the installer
+with real macOS utilities. The full Go suite/race/vet, whole Python suite, module
+inventory and source PTY run only on Linux. The downloaded release-binary PTY
+checks `--version`, `--licenses` and terminal behavior without Go/Bun/Node on PATH.
+Go package tests compile test executables, not a replacement release binary.
+
+After Linux verification and macOS execution pass, assemble the **original**
+two bundles on Linux:
+
+```sh
+python3 scripts/assemble-release.py "$RELEASE_TAG" --darwin-arm64 .verification/darwin-arm64 --linux-amd64 .verification/linux-amd64 --output .verification/release-bundle
+python3 scripts/check-release.py "$RELEASE_TAG" .verification/release-bundle
+```
+
+Assembly requires fresh output, validates both target bundles and identical
 common files, and retains partial output on failure. The single notice file covers
 the union of both platforms' executable dependencies. The complete release has
 exactly five assets: the two platform binaries, `SHA256SUMS`,
@@ -138,21 +177,26 @@ download or Gatekeeper verification.
    separately authorized Git operations, commit and push the candidate to **main**.
    Update `internal/buildinfo/version.txt` and its nonempty `CHANGELOG.md` section
    together. Choose the version explicitly; commit messages do not select a bump.
-2. Create and push its matching tag, currently `v0.1.2`. The **Release** workflow
+2. Create and push its matching, explicitly chosen tag. The **Release** workflow
    runs automatically for a new `v*` tag and rejects anything other than strict
    stable SemVer (`vX.Y.Z`). It ignores branch pushes, tag deletion and forced tag
    updates. Never move or reuse a release tag. This document grants no Git authority.
    Push one release tag at a time, using a maintainer's normal Git credentials;
    pushes made with another workflow's `GITHUB_TOKEN` do not trigger this workflow.
-3. The candidate release workflow requires read-only source validation and separate
-   native macOS arm64 and Ubuntu x86_64 build/verification jobs. Both use the
-   tag event's same commit and pinned Go toolchain. Source validation requires
-   the tag to resolve to that commit and the commit to belong to `origin/main`.
-   Both native jobs must pass before drafting; each contributes a same-run artifact.
-   The aggregate step revalidates both artifacts and assembles the complete
-   five-file bundle in fresh output:
-   `gitbuddy-0.1.2-darwin-arm64`, `gitbuddy-0.1.2-linux-amd64`, `SHA256SUMS`,
-   `THIRD_PARTY_NOTICES.txt`, and `install.sh`. The draft job revalidates the source
+3. Read-only source validation binds the exact repository, stable tag, event
+   commit, tag object ID and source version, and requires ancestry on `origin/main`.
+   The Ubuntu 24.04 build job rechecks the Linux x86_64 host and source binding,
+   runs the full checks once, compiles both targets and validates both bundles.
+   It executes only the Linux binary, then uploads two explicitly named artifacts
+   with exact four-file lists. The macOS 15 arm64 job needs that build and validated
+   source, rechecks host/event/commit/tag object/version, downloads only the Darwin
+   artifact from the same run, validates checksums **before chmod or execution**,
+   then runs its native binary smoke and focused OS checks above. Build success
+   alone is not native-smoke success.
+   Both jobs must pass before the Ubuntu 24.04 draft job downloads the original
+   same-run artifacts and revalidates/assembles the complete five-file bundle in
+   fresh output: `gitbuddy-X.Y.Z-darwin-arm64`, `gitbuddy-X.Y.Z-linux-amd64`,
+   `SHA256SUMS`, `THIRD_PARTY_NOTICES.txt`, and `install.sh`. The draft job revalidates the source
    version and bundle, checks the tag OID has not changed, refuses any existing
    release or draft, and uploads
    only those five files to a **new draft, not latest**. Version `0.1.0`
@@ -178,6 +222,20 @@ the collision: inspect the retained result instead of clobbering it.
 GitHub workflow artifacts do not preserve executable permission bits. For a manually
 downloaded binary, verify checksums before explicitly making it executable. The
 installer performs checksum verification before its own `chmod` and version check.
+The existing v4 [artifact upload/download contract](https://docs.github.com/en/actions/tutorials/store-and-share-data)
+uses immutable named artifacts; downloads without a run ID/token select the current
+run. Neither verification nor drafting accepts alternate runs or repositories.
+macOS does not reupload its permission-adjusted copy; drafting uses the original
+Linux-produced bytes.
+
+Local macOS compilation of both targets, bundle checks and native Darwin execution
+can establish those local contracts, not Linux-hosted compilation, Linux execution
+or GitHub's transfer/gating behavior. Linux → Darwin end-to-end hosted validation
+remains pending until a separately authorized new version-tag run. No PR/manual
+release trigger or guard bypass is provided to obtain that evidence. Fewer macOS
+checks are a workload reduction, not measured cost savings; standard public-repo
+runners are free. Actual downloaded execution/Gatekeeper and installed-update
+trials remain separate from CI.
 
 ## Publish
 
