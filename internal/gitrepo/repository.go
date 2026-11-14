@@ -32,16 +32,43 @@ type Status struct {
 	Remotes, FetchWarnings            []string
 }
 
-// Snapshot freezes commit roots and annotations for every page in a generation.
-// Callers must not modify its roots or labels while reading history.
+// CommitRelation compares ancestry only with the attached branch's upstream.
+// Shared commits and commits on unrelated refs are Unmarked.
+type CommitRelation uint8
+
+const (
+	Unmarked CommitRelation = iota
+	Incoming
+	LocalOnly
+)
+
+// UpstreamComparison counts unique commits in the frozen HEAD/upstream pair,
+// independently of the number of history rows loaded by the UI.
+type UpstreamComparison struct {
+	Ahead, Behind int
+}
+
+// Snapshot freezes commit roots, annotations and upstream membership for every
+// page in a generation. Callers must not modify it or its referenced data while
+// reading history.
 type Snapshot struct {
-	Roots  []string
-	Labels map[string][]string
+	// Branch and Head are the identity captured with this history, not an earlier
+	// independent Status read. Branch is empty when detached; Head when unborn.
+	Branch, Head string
+	Roots        []string
+	Labels       map[string][]string
+	// Relations contains only differing commits; omitted SHAs are Unmarked.
+	Relations map[string]CommitRelation
+	// Diverged reports unique commits on both sides, independent of page limits.
+	Diverged bool
+	// Comparison is nil without an available upstream; zero counts mean in sync.
+	Comparison *UpstreamComparison
 }
 
 type Commit struct {
 	SHA, Subject, Author, AuthoredAt string
 	Labels                           []string
+	Relation                         CommitRelation
 }
 
 type ChangedFile struct{ Status, Path, OldPath string }

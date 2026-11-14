@@ -18,12 +18,18 @@ type fakeRepository struct {
 	rows                       []gitrepo.Commit
 	status                     gitrepo.Status
 	fetched, pulled, readLimit int
+	snapshotScope              gitrepo.Scope
+	snapshot                   *gitrepo.Snapshot
 }
 
 func (r *fakeRepository) Root() string                                   { return "/example/repository" }
 func (r *fakeRepository) Status(context.Context) (gitrepo.Status, error) { return r.status, nil }
-func (r *fakeRepository) Snapshot(context.Context, gitrepo.Scope) (gitrepo.Snapshot, error) {
-	return gitrepo.Snapshot{Roots: []string{"frozen"}}, nil
+func (r *fakeRepository) Snapshot(_ context.Context, scope gitrepo.Scope) (gitrepo.Snapshot, error) {
+	r.snapshotScope = scope
+	if r.snapshot != nil {
+		return *r.snapshot, nil
+	}
+	return gitrepo.Snapshot{Branch: r.status.Branch, Head: r.status.Head, Roots: []string{"frozen"}}, nil
 }
 func (r *fakeRepository) History(_ context.Context, _ gitrepo.Snapshot, offset, limit int) ([]gitrepo.Commit, error) {
 	r.readLimit = limit
@@ -39,14 +45,14 @@ func setup(t *testing.T, count int) (*Model, *fakeRepository) {
 	t.Helper()
 	repo := &fakeRepository{status: gitrepo.Status{Branch: "main", Head: "0000", Upstream: "origin/main", Remotes: []string{"origin"}}}
 	for i := 0; i < count; i++ {
-		repo.rows = append(repo.rows, gitrepo.Commit{SHA: fmt.Sprintf("%040d", i), Subject: fmt.Sprintf("Commit %d", i), Author: "Author", AuthoredAt: "2026-11-13"})
+		repo.rows = append(repo.rows, gitrepo.Commit{SHA: fmt.Sprintf("%040d", i), Subject: fmt.Sprintf("Commit %d", i), Author: "Author", AuthoredAt: "2026-11-13T12:00:00Z"})
 	}
 	settings := preferences.Load(t.TempDir())
 	settings.Value.AutoFetch = false
 	m := New(context.Background(), repo, settings, palette.Load(settings.Directory), nil, false)
 	m.width = 120
 	m.height = 32
-	m.Update(m.refresh(gitrepo.All)())
+	m.Update(m.refresh(m.scope)())
 	if m.selected != "" {
 		m.Update(detailsMsg{request: m.detailRequest, details: gitrepo.Details{SHA: m.selected, Message: "First details"}})
 	}
@@ -60,6 +66,9 @@ func plain(m *Model) string { return ansi.Strip(m.View().Content) }
 
 func TestDefaultHistoryCapAndRetainedSelection(t *testing.T) {
 	m, repo := setup(t, 450)
+	if m.scope != gitrepo.Current || repo.snapshotScope != gitrepo.Current {
+		t.Fatal("initial history must query the current branch")
+	}
 	if len(m.rows) != 100 || m.hasMore || repo.readLimit != 100 {
 		t.Fatal("default cap exceeded")
 	}
@@ -301,7 +310,7 @@ func TestLayoutPaddingGapAndCompactPalette(t *testing.T) {
 		}
 		history := -1
 		for y, line := range lines {
-			if !strings.HasPrefix(line, " ") || !strings.HasSuffix(line, " ") {
+			if !strings.HasPrefix(line, "  ") || !strings.HasSuffix(line, "  ") {
 				t.Fatal("edge padding")
 			}
 			if strings.Contains(line, "History") {
@@ -314,10 +323,42 @@ func TestLayoutPaddingGapAndCompactPalette(t *testing.T) {
 		if history < 0 || strings.TrimSpace(lines[history+1][:59]) != "" || !strings.Contains(lines[history+2], "▌") {
 			t.Fatal("history gap/selection")
 		}
-		if !strings.HasPrefix(lines[1], "  repository") {
+		if !strings.HasPrefix(lines[1], "    Gitbuddy / repository") {
 			t.Fatal("header inset")
 		}
+		paneTop := history - 1
+		paneBottom := paneTop + m.paneHeight() - 1
+		if strings.TrimSpace(lines[paneTop-1]) != "" || strings.TrimSpace(lines[paneBottom+1]) != "" {
+			t.Fatal("missing separator above or below the panes")
+		}
+		boundary := horizontalPadding + m.contentWidth()/2
+		for _, text := range lines[paneTop : paneBottom+1] {
+			cells := []rune(text) // Fixture content uses single-cell characters.
+			if string(cells[boundary-horizontalPadding:boundary+horizontalPadding]) != "    " {
+				t.Fatal("adjacent pane insets must provide four empty columns")
+			}
+		}
+		details := strings.Index(lines[history], "Commit details")
+		if details < 0 || ansi.StringWidth(lines[history][:details]) != boundary+horizontalPadding {
+			t.Fatal("panes must meet without an additional gutter")
+		}
+		if !strings.HasPrefix(lines[history], "    History") {
+			t.Fatal("history pane horizontal inset")
+		}
 	}
+	m.width, m.height = 80, 15
+	m.selectCommit(m.rows[2].SHA)
+	m.updates.status = "No newer stable release"
+	m.ensureVisible()
+	compact := plain(m)
+	if !strings.Contains(compact, "Commit 2") || !strings.Contains(compact, "No newer stable release") ||
+		!strings.Contains(compact, "Not fetched this session") || !strings.Contains(compact, "Ctrl+P") {
+		t.Fatalf("compact update notice hid history or Git status: %s", compact)
+	}
+	if len(strings.Split(compact, "\n")) != 15 {
+		t.Fatal("compact footer exceeded terminal height")
+	}
+	m.updates.status = ""
 	m.width = 60
 	m.height = 18
 	m.openDialog("commands", "")
@@ -331,6 +372,172 @@ func TestLayoutPaddingGapAndCompactPalette(t *testing.T) {
 	press(m, tea.KeyEnter, "")
 	if !m.closing {
 		t.Fatal("last compact command not selected")
+	}
+}
+
+func TestIncomingAndDivergedLocalHistoryPresentation(t *testing.T) {
+	m, _ := setup(t, 3)
+	m.rows[0].Subject, m.rows[0].Relation = "incoming subject", gitrepo.Incoming
+	m.rows[1].Subject, m.rows[1].Relation = "local subject", gitrepo.LocalOnly
+	m.rows[1].Author = "Local Author"
+	m.rows[2].Subject = "shared subject"
+	m.snapshot.Diverged = true
+	for _, mode := range []string{"dark", "light"} {
+		m.settings.Value.ColorMode = mode
+		c := m.colors()
+		bg := c.Panel
+		if mode == "light" {
+			bg = c.Active
+		}
+		m.selected = m.rows[0].SHA
+		render := func() []string { return strings.Split(m.pane("history", 70, 14, c), "\n") }
+		find := func(rows []string, text string) string {
+			t.Helper()
+			for _, row := range rows {
+				if strings.Contains(ansi.Strip(row), text) {
+					return row
+				}
+			}
+			t.Fatalf("missing history text %q", text)
+			return ""
+		}
+		rows := render()
+		// Incoming text is muted even when selected; the existing selection
+		// marker/background still make keyboard focus clear.
+		incoming := find(rows, "incoming subject")
+		if !strings.Contains(incoming, coloredPrefix("incoming subject", c.Muted, c.Selection)) ||
+			!strings.Contains(incoming, line("▌", 1, c.Accent, c.Selection, false)) {
+			t.Fatalf("%s incoming styling lost dimming or selection", mode)
+		}
+		baseline := horizontalPadding + 1 + horizontalPadding
+		if strings.Index(ansi.Strip(find(rows, "local subject")), "local subject") != baseline+2 ||
+			strings.Index(ansi.Strip(find(rows, "shared subject")), "shared subject") != baseline {
+			t.Fatal("only diverged local text should gain a two-cell indent")
+		}
+		// Both lines of a local entry must move together, without recoloring it.
+		if !strings.Contains(find(rows, "local subject"), coloredPrefix("local subject", c.Text, bg)) {
+			t.Fatal("local commit text was recolored")
+		}
+		localMeta := ansi.Strip(find(rows, "Local Author"))
+		if strings.Index(localMeta, m.rows[1].SHA[:8]) != baseline+2 {
+			t.Fatal("local metadata did not follow the subject indent")
+		}
+		for _, row := range rows {
+			if ansi.StringWidth(row) != 70 {
+				t.Fatal("indented commit exceeded its pane width")
+			}
+		}
+		m.snapshot.Diverged = false
+		if strings.Index(ansi.Strip(find(render(), "local subject")), "local subject") != baseline {
+			t.Fatal("ahead-only local history must not be indented")
+		}
+		m.snapshot.Diverged = true
+	}
+}
+
+func TestFocusHighlightsOnlyTheActivePane(t *testing.T) {
+	m, _ := setup(t, 3)
+	for _, theme := range m.themes.Names {
+		m.settings.Value.Theme = theme
+		for _, mode := range []string{"dark", "light"} {
+			m.settings.Value.ColorMode = mode
+			c := m.colors()
+			highlight, recessed := c.Panel, c.Active
+			if mode == "light" {
+				highlight, recessed = c.Active, c.Panel
+			}
+			surface := func(kind string) string {
+				return strings.Split(m.pane(kind, 40, 8, c), "\n")[0]
+			}
+			m.focus = "history"
+			wantActive := line("", 40, c.Text, highlight, false)
+			wantInactive := line("", 40, c.Text, recessed, false)
+			if wantActive == wantInactive {
+				t.Fatal("fixture must distinguish rendered surfaces")
+			}
+			if surface("history") != wantActive || surface("details") != wantInactive {
+				t.Fatalf("%s/%s highlights the inactive pane", theme, mode)
+			}
+			press(m, tea.KeyTab, "")
+			if surface("history") != wantInactive || surface("details") != wantActive {
+				t.Fatalf("%s/%s highlight did not follow Tab", theme, mode)
+			}
+		}
+	}
+	// A single-mode custom theme can resolve to light colors in a requested dark
+	// mode (or vice versa). Focus follows the rendered surface, not that request.
+	m.settings.Value.ColorMode = "dark"
+	m.focus = "history"
+	c := m.themes.Resolve("opencode", "light")
+	if first := strings.Split(m.pane("history", 40, 8, c), "\n")[0]; first != line("", 40, c.Text, c.Active, false) {
+		t.Fatal("single-mode theme fallback inverted focus")
+	}
+}
+
+func TestWrappedDiagnosticsHavePaddedContinuousSeverityRule(t *testing.T) {
+	m, _ := setup(t, 100)
+	m.width, m.height = 60, 18
+	m.selectCommit(m.rows[99].SHA)
+	m.ensureVisible()
+	m.fail(errors.New("Failure: " + strings.Repeat("wrapped diagnostic ", 30)))
+	if !strings.Contains(plain(m), "Commit 99") {
+		t.Fatal("diagnostic growth hid the selected commit")
+	}
+	c := m.colors()
+	assertBlock := func(lines []string, width int, bg string) {
+		t.Helper()
+		rows := messageRows(lines, width, c, bg, errorColor(c))
+		if len(lines) < 2 {
+			t.Fatal("fixture must wrap")
+		}
+		if len(rows) != len(lines)+2 {
+			t.Fatal("messages need exactly one row of vertical padding on each side")
+		}
+		for _, row := range rows {
+			if !strings.HasPrefix(row, line("▎", 1, errorColor(c), bg, false)) {
+				t.Fatal("red rule must continue through every row")
+			}
+			if ansi.StringWidth(row) != width {
+				t.Fatal("message exceeds its column budget")
+			}
+		}
+		if strings.TrimSpace(strings.TrimPrefix(ansi.Strip(rows[0]), "▎")) != "" ||
+			strings.TrimSpace(strings.TrimPrefix(ansi.Strip(rows[len(rows)-1]), "▎")) != "" {
+			t.Fatal("messages need one blank row inside each end of the rule")
+		}
+	}
+	assertBlock(m.footerNoticeLines(), m.contentWidth(), c.Background)
+	m.openDialog("errors", "")
+	inner := m.dialogWidth() - 2*horizontalPadding
+	assertBlock(m.errorLines(), inner, c.Panel)
+	view := plain(m)
+	if strings.Count(view, "▎") < 5 || !strings.Contains(view, "Esc Close") {
+		t.Fatal("diagnostic dialog lost its bordered message or controls")
+	}
+}
+
+func TestDetailsRemainReachableAfterInsetAndViewportChanges(t *testing.T) {
+	m, _ := setup(t, 3)
+	selected := m.rows[2].SHA
+	m.selectCommit(selected)
+	m.Update(detailsMsg{request: m.detailRequest, details: gitrepo.Details{
+		SHA: selected, Message: strings.Repeat("wrapped commit message ", 30),
+		Files: []gitrepo.ChangedFile{{Status: "A", Path: strings.Repeat("long-path/", 20) + "END-OF-DETAILS"}},
+	}})
+	m.rows = m.rows[:2] // Keep the selected details outside the loaded view.
+	press(m, tea.KeyTab, "")
+	for range 100 {
+		press(m, tea.KeyPgDown, "")
+	}
+	if !strings.Contains(plain(m), "END-OF-DETAILS") {
+		t.Fatal("pane insets or retained-selection notice made the last details unreachable")
+	}
+	m.Update(tea.WindowSizeMsg{Width: 75, Height: 18})
+	for range 100 {
+		press(m, tea.KeyPgDown, "")
+	}
+	if !strings.Contains(plain(m), "END-OF-DETAILS") || m.detailsTop > m.maxDetailsTop() {
+		t.Fatal("narrow reflow lost the last wrapped details")
 	}
 }
 

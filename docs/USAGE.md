@@ -2,18 +2,58 @@
 
 Gitbuddy opens one Git repository per process. For installation, basic shortcuts
 and contributions, start with the [README](../README.md).
+This guide describes the `0.1.2` candidate; the released `0.1.1` still opens
+all-branch history by default.
+
+## Header and commit rows
+
+The header's left section shows **Gitbuddy / repository**. Its right section
+shows the current branch in the accent color, followed by green `↑ahead ↓behind`
+counts against its configured upstream. Counts cover the full frozen comparison,
+not just the loaded rows. The branch identity and counts refresh together with
+repository history, including after an external checkout. Without an
+available upstream, `↑— ↓—` means unavailable rather than zero.
+
+Each commit uses two rows:
+
+- **Title and relative time:** a yellow `[HEAD]` prefix marks the current HEAD;
+  the author timestamp appears at the right as `5 mins ago`, `2h ago`,
+  `3 days ago` or `last week`.
+- **SHA/tags and author:** the muted short SHA and any commit tags appear at the
+  left, with the Git author name aligned at the right. Git does not reliably
+  store a service username, so Gitbuddy does not guess one or perform a lookup.
+
+One minute clock redraws relative times without fetching, refreshing Git,
+changing selection or disturbing an open command palette. Full absolute dates
+and author/committer identities remain in commit details. Long fields truncate
+to fit the terminal; no patched icon font is required for the branch glyph.
 
 ## History and details
 
-History defaults to local branches, remote-tracking branches, tags and HEAD,
-excluding stash/reflog entries. Use **Ctrl+P → Current branch** to narrow the
-view. Details show the selected commit's full message, metadata, parents and
-changed filenames. Merge files are compared with the **first parent**; root
+History defaults to the **current branch and its configured upstream**, including
+fetched commits not yet merged locally (HEAD only when detached or without an
+available upstream). Use **Ctrl+P → All branches** to include other local branches,
+remote-tracking branches, tags and HEAD, excluding stash/reflog entries.
+Details show the selected commit's full message,
+metadata, parents and changed filenames. Merge files are compared with the **first parent**; root
 commits list added files. There is no branch graph or full patch viewer.
+
+Incoming commits—reachable from the current branch's upstream but not from
+HEAD—use dimmed text. If both sides contain commits absent from the other,
+local-only subjects and metadata are indented by two columns; ahead-only local
+history is not indented. Shared commits and unrelated branches keep their normal
+appearance. Classification uses frozen commit ancestry, not labels or
+patch-equivalence, and refreshes after a fetch or local refresh.
+An unusually large comparison exceeding 100,000 differing commits reports an
+error instead of allocating an unbounded membership list or displaying a partial
+classification. This metadata limit is separate from the loaded-history cap.
 
 Below 100 terminal columns, history and details share one pane. Selection is
 retained across refreshes, including when a selected commit leaves the loaded
 history. Navigate again to select a visible commit.
+**Tab** moves focus and its pane highlight. Errors and warnings wrap beside a
+continuous red rule; long footer diagnostics remain available in the scrollable
+**Ctrl+P → Show errors and warnings** dialog.
 
 **Maximum commits** defaults to **100** and caps the total loaded history, not
 each page. Change it through Ctrl+P → Maximum commits. Changes apply immediately,

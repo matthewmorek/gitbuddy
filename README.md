@@ -30,7 +30,7 @@ an installed, working Git. Intel Macs, Linux and Windows are not supported yet.
 The downloaded app needs no Go, Python, Bun, Node or GitHub CLI.
 
 > **Early prerelease:** the macOS binary is unsigned and not notarized. Gatekeeper
-> may block it; downloaded-install testing is still pending. Do not disable
+> may block it. Do not disable
 > Gatekeeper or remove quarantine to make it run. Report a blocked installation
 > [as an issue](https://github.com/matthewmorek/gitbuddy/issues).
 
@@ -107,8 +107,10 @@ gitbuddy
 gitbuddy /path/to/your/repository
 ```
 
-Repository subdirectories also work. Start with **Ctrl+P** to explore commands
-and settings.
+Repository subdirectories also work. Starting with the `0.1.2` candidate, history
+opens on the **current branch and its upstream**, including incoming commits;
+choose **Ctrl+P → All branches** for the wider view. The released `0.1.1` opens
+all branches by default. Start with **Ctrl+P** to explore commands and settings.
 
 | Key | Action |
 | --- | --- |

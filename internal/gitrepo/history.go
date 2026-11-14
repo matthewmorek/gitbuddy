@@ -9,8 +9,11 @@ import (
 	"strings"
 )
 
+// Snapshot includes HEAD and its available configured upstream in both scopes;
+// All also retains branch, remote-tracking and commit-tag roots. Relations compare
+// only the attached branch and its upstream, never labels or other remotes.
 func (r *Repository) Snapshot(ctx context.Context, scope Scope) (Snapshot, error) {
-	snapshot := Snapshot{Roots: []string{}, Labels: map[string][]string{}}
+	snapshot := Snapshot{Roots: []string{}, Labels: map[string][]string{}, Relations: map[string]CommitRelation{}}
 	roots := map[string]bool{}
 	if scope != All && scope != Current {
 		return snapshot, errors.New("Unknown history scope.")
@@ -22,6 +25,12 @@ func (r *Repository) Snapshot(ctx context.Context, scope Scope) (Snapshot, error
 	status, err := parseStatus(out)
 	if err != nil {
 		return snapshot, err
+	}
+	snapshot.Branch, snapshot.Head = status.Branch, status.Head
+	if status.Head != "" {
+		if err := validateSHA(status.Head); err != nil {
+			return snapshot, err
+		}
 	}
 	add := func(sha, label string) error {
 		if err := validateSHA(sha); err != nil {
@@ -36,37 +45,63 @@ func (r *Repository) Snapshot(ctx context.Context, scope Scope) (Snapshot, error
 		}
 		return nil
 	}
-	out, err = r.git(ctx, "", "for-each-ref", "--format=%(objectname)%00%(refname)%00", "refs/heads/", "refs/remotes/", "refs/tags/")
+	// Capture full upstream names with the same ref enumeration as their OIDs.
+	// Other namespaces contribute only the configured upstream, not arbitrary
+	// custom refs, alongside All's standard branch/remote/tag roots.
+	out, err = r.git(ctx, "", "for-each-ref", "--format=%(objectname)%00%(refname)%00%(upstream)%00")
 	if err != nil {
 		return snapshot, err
 	}
+	upstreamRef, branchHead := "", ""
+	commitsByRef := map[string]string{}
+	var refs [][]string
 	if out != "" {
-		var refs [][]string
-		var input strings.Builder
 		for _, line := range strings.Split(strings.TrimSuffix(out, "\n"), "\n") {
 			ref, err := fields(line)
-			if err != nil || len(ref) != 2 || validateSHA(ref[0]) != nil {
+			if err != nil || len(ref) != 3 || validateSHA(ref[0]) != nil {
 				return snapshot, errors.New("Git returned an invalid reference snapshot.")
 			}
+			if status.Branch != "" && ref[1] == "refs/heads/"+status.Branch {
+				branchHead, upstreamRef = ref[0], ref[2]
+			}
 			refs = append(refs, ref)
+		}
+	}
+	if status.Branch != "" && branchHead != status.Head {
+		return snapshot, errors.New("HEAD changed while capturing history. Refresh to read a consistent branch snapshot.")
+	}
+	var input strings.Builder
+	var commitRefs [][]string
+	for _, ref := range refs {
+		if historyRef(ref[1]) || ref[1] == upstreamRef {
+			commitRefs = append(commitRefs, ref)
 			fmt.Fprintf(&input, "%s^{}\n", ref[0])
 		}
+	}
+	if len(commitRefs) != 0 {
 		peeled, err := r.git(ctx, input.String(), "cat-file", "--batch-check=%(objectname) %(objecttype)")
 		if err != nil {
 			return snapshot, err
 		}
 		lines := strings.Split(strings.TrimSuffix(peeled, "\n"), "\n")
-		if len(lines) != len(refs) {
+		if len(lines) != len(commitRefs) {
 			return snapshot, errors.New("Git returned an incomplete reference snapshot.")
 		}
-		for i, ref := range refs {
+		for i, ref := range commitRefs {
 			sha, kind, _ := strings.Cut(lines[i], " ")
 			isTag := strings.HasPrefix(ref[1], "refs/tags/")
-			if isTag && (kind == "tree" || kind == "blob") {
+			if (isTag || !historyRef(ref[1])) && (kind == "tree" || kind == "blob") {
 				continue
 			}
 			if kind != "commit" {
 				return snapshot, errors.New("Git returned an invalid commit reference.")
+			}
+			if err := validateSHA(sha); err != nil {
+				return snapshot, err
+			}
+			commitsByRef[ref[1]] = sha
+			if !historyRef(ref[1]) {
+				continue
 			}
 			label := strings.TrimPrefix(strings.TrimPrefix(ref[1], "refs/heads/"), "refs/remotes/")
 			if isTag {
@@ -86,10 +121,79 @@ func (r *Repository) Snapshot(ctx context.Context, scope Scope) (Snapshot, error
 			return snapshot, err
 		}
 	}
+	if status.Branch != "" && status.Head != "" {
+		if upstream := commitsByRef[upstreamRef]; upstream != "" {
+			if !roots[upstream] {
+				snapshot.Roots = append(snapshot.Roots, upstream)
+				roots[upstream] = true
+			}
+			snapshot.Relations, snapshot.Diverged, err = r.commitRelations(ctx, status.Head, upstream)
+			if err != nil {
+				return snapshot, err
+			}
+			snapshot.Comparison = &UpstreamComparison{}
+			for _, relation := range snapshot.Relations {
+				switch relation {
+				case LocalOnly:
+					snapshot.Comparison.Ahead++
+				case Incoming:
+					snapshot.Comparison.Behind++
+				}
+			}
+		}
+	}
 	return snapshot, nil
 }
 
-// History uses only the supplied immutable SHA roots, never moving ref names.
+func historyRef(ref string) bool {
+	return strings.HasPrefix(ref, "refs/heads/") || strings.HasPrefix(ref, "refs/remotes/") || strings.HasPrefix(ref, "refs/tags/")
+}
+
+// Bound metadata independently of the UI's loaded history cap. One extra record
+// detects overflow: never return a silently partial membership classification.
+const maxRelationCommits = 100000
+
+func (r *Repository) commitRelations(ctx context.Context, head, upstream string) (map[string]CommitRelation, bool, error) {
+	out, err := r.git(ctx, "", "rev-list", "--left-right", fmt.Sprintf("--max-count=%d", maxRelationCommits+1), head+"..."+upstream, "--")
+	if err != nil {
+		return nil, false, err
+	}
+	return parseCommitRelations(out)
+}
+
+func parseCommitRelations(out string) (map[string]CommitRelation, bool, error) {
+	relations := map[string]CommitRelation{}
+	if out == "" {
+		return relations, false, nil
+	}
+	if !strings.HasSuffix(out, "\n") {
+		return nil, false, errors.New("Git returned an incomplete upstream comparison.")
+	}
+	lines := strings.Split(strings.TrimSuffix(out, "\n"), "\n")
+	if len(lines) > maxRelationCommits {
+		return nil, false, fmt.Errorf("History comparison exceeds %d unique commits. Inspect this unusually large HEAD/upstream difference with Git.", maxRelationCommits)
+	}
+	incoming, local := false, false
+	for _, line := range lines {
+		if len(line) < 2 || validateSHA(line[1:]) != nil {
+			return nil, false, errors.New("Git returned an invalid upstream comparison.")
+		}
+		switch line[0] {
+		case '<':
+			relations[line[1:]] = LocalOnly
+			local = true
+		case '>':
+			relations[line[1:]] = Incoming
+			incoming = true
+		default:
+			return nil, false, errors.New("Git returned an invalid upstream comparison side.")
+		}
+	}
+	return relations, incoming && local, nil
+}
+
+// History uses only the supplied frozen SHA roots, labels and relations, never
+// moving ref names or live upstream membership.
 func (r *Repository) History(ctx context.Context, snapshot Snapshot, offset, limit int) ([]Commit, error) {
 	if offset < 0 || limit < 1 {
 		return nil, errors.New("History offset must be nonnegative and page size must be positive integers.")
@@ -119,7 +223,10 @@ func (r *Repository) History(ctx context.Context, snapshot Snapshot, offset, lim
 		if err := validateSHA(records[i]); err != nil {
 			return nil, err
 		}
-		commits = append(commits, Commit{records[i], records[i+1], records[i+2], records[i+3], slices.Clone(snapshot.Labels[records[i]])})
+		commits = append(commits, Commit{
+			SHA: records[i], Subject: records[i+1], Author: records[i+2], AuthoredAt: records[i+3],
+			Labels: slices.Clone(snapshot.Labels[records[i]]), Relation: snapshot.Relations[records[i]],
+		})
 	}
 	return commits, nil
 }

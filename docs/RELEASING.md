@@ -45,7 +45,7 @@ same host do not protect against compromised distribution.
 
 ## First release policy
 
-- Candidate version: `0.1.1`, tag `v0.1.1`, draft title `0.1.1-beta`.
+- First public prerelease: `0.1.1`, tag `v0.1.1`, display title `0.1.1-beta`.
   The failed, unpublished `v0.1.0` tag is retained unchanged. The `-beta` suffix
   is a display title, not the executable version or tag. Changing a manifest is
   not publication.
@@ -64,6 +64,11 @@ same host do not protect against compromised distribution.
 
 ## Local preparation
 
+The next patch candidate is `0.1.2`. The maintainer reported a successful
+downloaded macOS installation and immediate launch of `0.1.1`, with no blockers.
+That initial installation check does not establish the still-pending installed
+upgrade and optional restart path below.
+
 With Go 1.26.7 or newer, Git and Python 3:
 
 ```sh
@@ -73,8 +78,8 @@ python3 -m unittest discover -s scripts
 bash -n scripts/install.sh
 python3 scripts/smoke-terminal.py
 python3 scripts/build.py --release
-python3 scripts/smoke-terminal.py --binary dist/gitbuddy-0.1.1-darwin-arm64
-python3 scripts/check-release.py v0.1.1
+python3 scripts/smoke-terminal.py --binary dist/gitbuddy-0.1.2-darwin-arm64
+python3 scripts/check-release.py v0.1.2
 ```
 
 `check-release.py` is read-only: it checks the tag against `internal/buildinfo/version.txt`, requires a
@@ -99,7 +104,7 @@ download or Gatekeeper verification.
    separately authorized Git operations, commit and push the candidate to **main**.
    Update `internal/buildinfo/version.txt` and its nonempty `CHANGELOG.md` section
    together. Choose the version explicitly; commit messages do not select a bump.
-2. Create and push its matching tag, currently `v0.1.1`. The **Release** workflow
+2. Create and push its matching tag, currently `v0.1.2`. The **Release** workflow
    runs automatically for a new `v*` tag and rejects anything other than strict
    stable SemVer (`vX.Y.Z`). It ignores branch pushes, tag deletion and forced tag
    updates. Never move or reuse a release tag. This document grants no Git authority.
@@ -109,16 +114,15 @@ download or Gatekeeper verification.
    to still resolve to it and the commit to belong to `origin/main` history,
    checks source version/architecture, runs tests and source/binary
    terminal checks, and archives four verified files:
-   `gitbuddy-0.1.1-darwin-arm64`, `SHA256SUMS`, `THIRD_PARTY_NOTICES.txt`, `install.sh`.
+   `gitbuddy-0.1.2-darwin-arm64`, `SHA256SUMS`, `THIRD_PARTY_NOTICES.txt`, `install.sh`.
    After verification, a second, write-authorized job automatically creates the
    draft. It checks out the tested commit, revalidates transferred bytes, checks the tag
    object has not changed, and refuses any existing release or draft for that tag.
    It uploads the exact four files to a **new draft, not latest**. Version `0.1.0`
    is also marked **prerelease**; subsequent versions are ordinary drafts.
-   For the replacement `0.1.1` first-release trial, explicitly mark the verified
-   draft **prerelease** and set its title to `0.1.1-beta`, retaining **draft** and
-   **not latest**. It must stay a prerelease when eventually published for the
-   download/Gatekeeper trial. The workflow neither creates a tag nor publishes.
+   The `0.1.1` first-release trial was explicitly marked **prerelease** with title
+   `0.1.1-beta` before publication, keeping it out of stable discovery.
+   The workflow neither creates a tag nor publishes.
    Only this job has `contents: write`;
    it uses the workflow token, not a personal token or signing credentials.
 4. Inspect the run, draft, notes, tag SHA and assets. If creation/upload partially
@@ -175,9 +179,9 @@ explicitly rolling back.
 Offline tests cover failures preserving the old binary/configuration, but do not
 substitute for this hosted test. Record the tested release asset hashes and platform.
 
-Only after these checks, explicitly edit the same release to clear **prerelease**
-and mark it **latest**. Do not rebuild or replace the verified assets during
-promotion. Then check the unpinned installation path below; report failures rather
+If promoting that prerelease, only after these checks explicitly edit the same
+release to clear **prerelease** and mark it **latest**. Do not rebuild or replace
+the verified assets during promotion. Then check the unpinned installation path below; report failures rather
 than automatically replacing assets, republishing or discarding the previous release.
 
 ## Install, update and rollback
@@ -231,6 +235,28 @@ acceptance. Include both manual and startup discovery in that future live trial.
 rollback; default latest never silently downgrades. Back up preferences/themes
 before a configuration-incompatible downgrade. Uninstalling or downgrading does
 not reverse Git operations already performed.
+
+## Installed updater trial
+
+After the `0.1.2` candidate has passed verification, review and hosted checks,
+its commit, tag and publication still need separate maintainer authorization.
+The release must be published as **stable/latest** for the installed `0.1.1`
+app to discover it. Keeping `0.1.2` a draft or prerelease will not test that path.
+
+1. Keep the working `0.1.1` installation and note its repository and settings.
+   After the new stable release is available, relaunch `0.1.1` and confirm the
+   background notice appears without taking focus or installing anything.
+   Check **Ctrl+P → Check for updates** before proceeding too.
+2. Choose **Install update**, confirm, and verify the executable now reports
+   `gitbuddy 0.1.2`. The existing TUI must stay usable without an automatic restart.
+3. Choose **Restart** explicitly. Confirm terminal restoration, reopening the
+   same repository, preserved settings and `0.1.2` running. Active Git operations
+   must settle rather than being interrupted.
+
+Record the tested versions, platform and downloaded hashes. A local unit test
+or successful release workflow is not this installed-process trial. Preserve
+existing assets and report failures; do not automatically republish, downgrade
+or remove the installation.
 
 ## Subsequent versions
 

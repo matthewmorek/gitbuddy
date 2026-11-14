@@ -39,6 +39,7 @@ type detailsMsg struct {
 type slowDetailsMsg int
 type autoMsg int
 type readyMsg int
+type minuteMsg time.Time
 type mutationMsg struct {
 	fetch bool
 	err   error
@@ -67,6 +68,7 @@ type Model struct {
 	started, closing                                      bool
 	operation, failure                                    string
 	lastFetch                                             time.Time
+	now                                                   time.Time
 	fetchFailed                                           bool
 	dialog                                                string
 	input                                                 textinput.Model
@@ -80,11 +82,19 @@ func New(ctx context.Context, repo gitrepo.Repo, settings *preferences.Store, th
 	input.Prompt = ""
 	input.Placeholder = "Search commands"
 	input.SetVirtualCursor(true)
-	return &Model{ctx: ctx, repo: repo, settings: settings, themes: themes, width: 80, height: 24, dark: true, focus: "history", scope: gitrepo.All, input: input, spinner: spinner.New(spinner.WithSpinner(spinner.MiniDot)), updates: newAppUpdates(updates, automaticUpdates)}
+	return &Model{ctx: ctx, repo: repo, settings: settings, themes: themes, width: 80, height: 24, dark: true, focus: "history", scope: gitrepo.Current, input: input, spinner: spinner.New(spinner.WithSpinner(spinner.MiniDot)), updates: newAppUpdates(updates, automaticUpdates), now: time.Now()}
 }
 
 func (m *Model) Init() tea.Cmd {
-	return tea.Batch(m.refresh(m.scope), tea.RequestBackgroundColor, m.spinner.Tick, m.startUpdateCheck())
+	return tea.Batch(m.refresh(m.scope), tea.RequestBackgroundColor, m.spinner.Tick, m.startUpdateCheck(), m.minuteTick())
+}
+
+// One clock drives all relative labels; it never refreshes Git or changes focus.
+func (m *Model) minuteTick() tea.Cmd {
+	if m.closing {
+		return nil
+	}
+	return tea.Tick(time.Minute, func(now time.Time) tea.Msg { return minuteMsg(now) })
 }
 
 func (m *Model) refresh(scope gitrepo.Scope) tea.Cmd {
@@ -218,11 +228,18 @@ func (m *Model) quit() tea.Cmd {
 func (m *Model) fail(err error) {
 	if err != nil {
 		m.failure = err.Error()
+		m.ensureVisible()
 	}
 }
 
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case minuteMsg:
+		if m.closing {
+			return m, nil
+		}
+		m.now = time.Time(msg)
+		return m, m.minuteTick()
 	case updateStartupMsg, updateCheckMsg, updateInstallMsg:
 		return m, m.updateMessage(msg)
 	case QuitMsg:
@@ -232,6 +249,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = max(1, msg.Width)
 		m.height = max(1, msg.Height)
 		m.ensureVisible()
+		m.detailsTop = min(m.detailsTop, m.maxDetailsTop())
 		return m, nil
 	case tea.BackgroundColorMsg:
 		m.dark = msg.IsDark()
@@ -265,6 +283,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.selected == "" && len(m.rows) > 0 {
 			detail = m.selectCommit(m.rows[0].SHA)
 		}
+		m.ensureVisible()
 		// Give the loaded local view a render interval before the initial fetch.
 		var ready tea.Cmd
 		if !m.started {
@@ -491,6 +510,7 @@ func (m *Model) dialogKey(msg tea.KeyPressMsg) tea.Cmd {
 			n, err := strconv.Atoi(m.input.Value())
 			if err != nil {
 				m.failure = "Enter a positive whole number."
+				m.ensureVisible()
 				return nil
 			}
 			if m.dialog == "max" {
@@ -512,6 +532,7 @@ func (m *Model) dialogKey(msg tea.KeyPressMsg) tea.Cmd {
 		option := options[min(m.choice, len(options)-1)]
 		if option.disabled != "" {
 			m.failure = option.disabled
+			m.ensureVisible()
 			return nil
 		}
 		m.closeDialog()
