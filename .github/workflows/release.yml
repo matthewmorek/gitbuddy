@@ -50,30 +50,17 @@ jobs:
           echo "version=${RELEASE_TAG#v}" >> "$GITHUB_OUTPUT"
           echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
 
-  native:
+  build:
     needs: validate
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - runner: macos-15
-            target: darwin-arm64
-            os: Darwin
-            arch: arm64
-          - runner: ubuntu-24.04
-            target: linux-amd64
-            os: Linux
-            arch: x86_64
-    runs-on: ${{ matrix.runner }}
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     env:
       RELEASE_TAG: ${{ needs.validate.outputs.tag }}
       RELEASE_VERSION: ${{ needs.validate.outputs.version }}
       EXPECTED_COMMIT: ${{ needs.validate.outputs.commit }}
       EXPECTED_TAG_OID: ${{ needs.validate.outputs.tag_oid }}
-      TARGET: ${{ matrix.target }}
-      EXPECTED_OS: ${{ matrix.os }}
-      EXPECTED_ARCH: ${{ matrix.arch }}
+      EXPECTED_OS: Linux
+      EXPECTED_ARCH: x86_64
       GOTOOLCHAIN: local
     steps:
       - uses: actions/checkout@v4
@@ -96,7 +83,7 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
-      - name: Require exact source Go toolchain
+      - name: Require exact build Go toolchain
         shell: bash
         run: |
           set -euo pipefail
@@ -113,25 +100,93 @@ jobs:
         run: |
           GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 go list -mod=readonly -deps ./cmd/gitbuddy
           GOOS=linux GOARCH=amd64 GOAMD64=v1 CGO_ENABLED=0 go list -mod=readonly -deps ./cmd/gitbuddy
-      - run: python3 scripts/build.py --release
-      - name: Execute standalone Go binary
+      - name: Compile both release targets without executing foreign output
         shell: bash
-        run: python3 scripts/smoke-terminal.py --binary "dist/gitbuddy-$RELEASE_VERSION-$TARGET"
-      - name: Validate native release bundle and notes
-        run: python3 scripts/check-release.py "$RELEASE_TAG" dist --target "$TARGET"
+        run: |
+          set -euo pipefail
+          mkdir artifacts
+          python3 scripts/build.py --release --target darwin-arm64 --output artifacts/darwin-arm64
+          python3 scripts/build.py --release --target linux-amd64 --output artifacts/linux-amd64
+          python3 scripts/check-release.py "$RELEASE_TAG" artifacts/darwin-arm64 --target darwin-arm64
+          python3 scripts/check-release.py "$RELEASE_TAG" artifacts/linux-amd64 --target linux-amd64
+      - name: Execute Linux standalone Go binary
+        shell: bash
+        run: python3 scripts/smoke-terminal.py --binary "artifacts/linux-amd64/gitbuddy-$RELEASE_VERSION-linux-amd64"
       - uses: actions/upload-artifact@v4
         with:
-          name: gitbuddy-${{ needs.validate.outputs.tag }}-${{ matrix.target }}
+          name: gitbuddy-${{ needs.validate.outputs.tag }}-darwin-arm64
           path: |
-            dist/gitbuddy-${{ needs.validate.outputs.version }}-${{ matrix.target }}
-            dist/SHA256SUMS
-            dist/THIRD_PARTY_NOTICES.txt
-            dist/install.sh
+            artifacts/darwin-arm64/gitbuddy-${{ needs.validate.outputs.version }}-darwin-arm64
+            artifacts/darwin-arm64/SHA256SUMS
+            artifacts/darwin-arm64/THIRD_PARTY_NOTICES.txt
+            artifacts/darwin-arm64/install.sh
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gitbuddy-${{ needs.validate.outputs.tag }}-linux-amd64
+          path: |
+            artifacts/linux-amd64/gitbuddy-${{ needs.validate.outputs.version }}-linux-amd64
+            artifacts/linux-amd64/SHA256SUMS
+            artifacts/linux-amd64/THIRD_PARTY_NOTICES.txt
+            artifacts/linux-amd64/install.sh
           if-no-files-found: error
 
-  draft:
-    needs: [validate, native]
+  macos:
+    needs: [validate, build]
     runs-on: macos-15
+    timeout-minutes: 15
+    env:
+      RELEASE_TAG: ${{ needs.validate.outputs.tag }}
+      RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+      EXPECTED_COMMIT: ${{ needs.validate.outputs.commit }}
+      EXPECTED_TAG_OID: ${{ needs.validate.outputs.tag_oid }}
+      EXPECTED_OS: Darwin
+      EXPECTED_ARCH: arm64
+      GOTOOLCHAIN: local
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.validate.outputs.commit }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify macOS host and validated source
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(uname -s)" = "$EXPECTED_OS"
+          test "$(uname -m)" = "$EXPECTED_ARCH"
+          test "$(git rev-parse HEAD)" = "$EXPECTED_COMMIT"
+          test "$(git rev-parse "$GITHUB_SHA^{commit}")" = "$EXPECTED_COMMIT"
+          test "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")" = "$EXPECTED_COMMIT"
+          test "$(git rev-parse "refs/tags/$RELEASE_TAG")" = "$EXPECTED_TAG_OID"
+          test "$RELEASE_TAG" = "v$RELEASE_VERSION"
+          test "$RELEASE_VERSION" = "$(cat internal/buildinfo/version.txt)"
+      - uses: actions/download-artifact@v4
+        with:
+          name: gitbuddy-${{ needs.validate.outputs.tag }}-darwin-arm64
+          path: artifacts/darwin-arm64
+      - name: Validate transferred Darwin bundle before native execution
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/check-release.py "$RELEASE_TAG" artifacts/darwin-arm64 --target darwin-arm64
+          # Artifact transfer strips mode bits; restore only the verified binary.
+          chmod 755 "artifacts/darwin-arm64/gitbuddy-$RELEASE_VERSION-darwin-arm64"
+          python3 scripts/smoke-terminal.py --binary "artifacts/darwin-arm64/gitbuddy-$RELEASE_VERSION-darwin-arm64"
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - name: Require exact macOS Go toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(go env GOVERSION)" = "go$(awk '$1 == "go" {print $2}' go.mod)"
+      - run: go test ./internal/preferences ./internal/gitrepo ./internal/updater
+      - run: python3 scripts/test_install.py -v
+
+  draft:
+    needs: [validate, build, macos]
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
       contents: write
