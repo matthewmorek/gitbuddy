@@ -11,6 +11,32 @@ import (
 	"time"
 )
 
+func TestSupportedTargets(t *testing.T) {
+	for _, tc := range []struct {
+		goos, goarch string
+		want         releaseTarget
+		asset        string
+	}{
+		{"darwin", "arm64", darwinARM64, "gitbuddy-1.2.3-darwin-arm64"},
+		{"linux", "amd64", linuxAMD64, "gitbuddy-1.2.3-linux-amd64"},
+		{"darwin", "amd64", "", ""},
+		{"linux", "arm64", "", ""},
+		{"linux", "386", "", ""},
+		{"windows", "amd64", "", ""},
+		{"freebsd", "amd64", "", ""},
+	} {
+		t.Run(tc.goos+"/"+tc.goarch, func(t *testing.T) {
+			got := supportedTarget(tc.goos, tc.goarch)
+			if got != tc.want {
+				t.Fatalf("target = %q; want %q", got, tc.want)
+			}
+			if got != "" && got.assetName("1.2.3") != tc.asset {
+				t.Fatalf("asset = %q; want %q", got.assetName("1.2.3"), tc.asset)
+			}
+		})
+	}
+}
+
 func TestStableComparison(t *testing.T) {
 	for _, version := range []string{"0.0.0", "1.20.3", "99999999999999999999999999999999999999.0.1"} {
 		if !stable(version) {

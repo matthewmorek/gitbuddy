@@ -29,11 +29,11 @@ parser.add_argument(
 arguments = parser.parse_args()
 binary_source = arguments.binary.resolve() if arguments.binary else None
 expected_version = (PROJECT / "internal/buildinfo/version.txt").read_text().strip()
-scratch = Path(tempfile.gettempdir()) / "opencode"
-scratch = scratch if scratch.is_dir() else Path(tempfile.gettempdir())
-# macOS exposes the temp directory through /var -> /private/var. Choose the
-# physical fixture path up front; the updater correctly refuses symlink ancestors.
-scratch = scratch.resolve()
+# /tmp is world-writable on Linux, so an installed binary there cannot qualify
+# for self-update. Use the ignored checkout evidence directory, without weakening
+# the updater's ancestor policy. Resolve macOS /var symlinks before creating it.
+scratch = (PROJECT / ".verification").resolve()
+scratch.mkdir(mode=0o700, exist_ok=True)
 
 
 def git(repo, *args, data=None):
@@ -72,7 +72,15 @@ def exercise(root, repo, width, mode, executable, isolated):
             for key, value in env.items()
             if not key.startswith(("BUN_", "OPENTUI_", "NODE_"))
         }
-        env.update({"PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "HOME": str(root)})
+        # Standard runner directories may contain Node (including /usr/bin/node).
+        # Expose only real Git and its native helpers, never a whole system PATH.
+        native_tools = root / f"native-tools-{width}"
+        native_tools.mkdir()
+        for tool in ("git", "sh", "ssh", "uname", "sed", "basename", "dirname"):
+            source = shutil.which(tool)
+            assert source, f"Required native tool is missing: {tool}"
+            (native_tools / tool).symlink_to(source)
+        env.update({"PATH": str(native_tools), "HOME": str(root)})
         assert all(
             not shutil.which(tool, path=env["PATH"]) for tool in ("go", "bun", "node")
         )

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Read-only release validation. Never execute or download an artifact."""
 
+import argparse
 import hashlib
 from pathlib import Path
 import re
@@ -9,6 +10,8 @@ import sys
 
 ROOT = Path(__file__).resolve().parent.parent
 STABLE = r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)"
+TARGETS = ("darwin-arm64", "linux-amd64")
+COMMON_ASSETS = ("THIRD_PARTY_NOTICES.txt", "install.sh")
 
 
 def release_tag(version):
@@ -41,18 +44,31 @@ def release_notes(changelog, version):
     return notes
 
 
-def verify_release_bundle(directory, version, changelog):
+def release_assets(version, target=None):
+    """Return only uploadable filenames; stale directory contents are excluded."""
+    release_tag(version)
+    if target is not None and target not in TARGETS:
+        raise ValueError("Unsupported release target.")
+    targets = TARGETS if target is None else (target,)
+    return [
+        *(f"gitbuddy-{version}-{item}" for item in targets),
+        "SHA256SUMS",
+        *COMMON_ASSETS,
+    ]
+
+
+def verify_release_bundle(directory, version, changelog, target=None):
+    """Validate a full bundle, or an explicitly selected native-target bundle."""
     tag = release_tag(version)
     notes = release_notes(changelog, version)
     directory = Path(directory)
-    binary = f"gitbuddy-{version}-darwin-arm64"
-    assets = [binary, "SHA256SUMS", "THIRD_PARTY_NOTICES.txt", "install.sh"]
+    assets = release_assets(version, target)
     for asset in assets:
         if not stat.S_ISREG((directory / asset).lstat().st_mode):
             raise ValueError(
                 f"Release asset {asset} must be a regular non-symlink file."
             )
-    expected = [binary, "THIRD_PARTY_NOTICES.txt", "install.sh"]
+    expected = [asset for asset in assets if asset != "SHA256SUMS"]
     # Only LF/CRLF line endings are allowed, not arbitrary Unicode separators.
     lines = (directory / "SHA256SUMS").read_bytes().decode("utf-8").split("\n")
     if lines[-1] == "":
@@ -80,18 +96,25 @@ def verify_release_bundle(directory, version, changelog):
 
 
 def main(args):
-    if len(args) not in (1, 2) or not all(args):
-        raise ValueError("Usage: python3 scripts/check-release.py vX.Y.Z [directory]")
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("tag")
+    parser.add_argument("directory", nargs="?", default="dist")
+    parser.add_argument(
+        "--target",
+        choices=TARGETS,
+        help="Validate one native bundle; default requires both targets",
+    )
+    args = parser.parse_args(args)
     version = (ROOT / "internal/buildinfo/version.txt").read_text().strip()
     tag = release_tag(version)
-    if args[0] != tag:
+    if args.tag != tag:
         raise ValueError(
             f"Release tag must match internal/buildinfo/version.txt exactly: {tag}."
         )
     # Preserve the changelog's body bytes, including CRLF and trailing whitespace.
     changelog = (ROOT / "CHANGELOG.md").read_bytes().decode("utf-8")
     result = verify_release_bundle(
-        args[1] if len(args) == 2 else "dist", version, changelog
+        args.directory, version, changelog, target=args.target
     )
     sys.stdout.write(result["notes"])
 

@@ -38,6 +38,7 @@ type Release struct{ Version string }
 // coordination remain the caller's responsibility.
 type Client struct {
 	version      string
+	target       releaseTarget
 	reason       string
 	path         string
 	baseline     *snapshot
@@ -55,10 +56,11 @@ type Client struct {
 }
 
 // New captures the running executable's identity. Only release builds running
-// as a non-root user on macOS arm64 can install; source builds never qualify.
+// as a non-root user on macOS arm64 or Linux x86_64 can install; source builds
+// never qualify.
 func New(version string, releaseBuild bool) *Client {
 	c := &Client{
-		version: version, uid: os.Getuid(),
+		version: version, target: supportedTarget(runtime.GOOS, runtime.GOARCH), uid: os.Getuid(),
 		checkHTTP:    newHTTPClient(10*time.Second, true),
 		downloadHTTP: newHTTPClient(60*time.Second, false),
 		checkURL:     latestURL, downloadBase: releasesURL,
@@ -67,8 +69,8 @@ func New(version string, releaseBuild bool) *Client {
 	switch {
 	case !releaseBuild:
 		c.reason = "self-update is only available in official release builds"
-	case runtime.GOOS != "darwin" || runtime.GOARCH != "arm64":
-		c.reason = "self-update requires macOS arm64"
+	case c.target == "":
+		c.reason = unsupportedTargetReason
 	case !stable(version):
 		c.reason = "the running version is not a stable X.Y.Z release"
 	case c.uid <= 0 || os.Geteuid() != c.uid:

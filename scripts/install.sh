@@ -4,9 +4,11 @@
 # Bash reads only this buffered body, never $0 or a second downloaded script.
 {
 gitbuddy_install() {
+  [ -x /bin/bash ] || { printf '%s\n' 'Error: required Bash not found: /bin/bash' >&2; return 1; }
   exec /bin/bash -s -- "$@" <<'GITBUDDY_INSTALL_BASH_EOF'
 # User-invoked installer/updater. Only release binaries are replaced; preferences
-# and shell profiles are never read or changed. Requires macOS's Bash 3.2 tools.
+# and shell profiles are never read or changed. Requires Bash and BSD/macOS or
+# GNU/Linux utilities, not a universal minimal-distribution toolset.
 set -euo pipefail
 export LC_ALL=C
 umask 077
@@ -44,11 +46,10 @@ usage() {
   cat <<'HELP'
 Usage: sh install.sh [--version X.Y.Z] [--install-dir /absolute/directory]
        curl -fsSL <installer-url> | sh -s -- [options]
-Installs or updates gitbuddy (macOS arm64) in ~/.local/bin by default.
+Installs or updates gitbuddy (macOS arm64 or Linux x86_64) in ~/.local/bin by default.
 Without --version, installs the latest stable release, never a downgrade.
 Use --version X.Y.Z to pin a published release or prerelease, or roll back.
 No sudo, profile edits, credentials, or quarantine changes are performed.
-Initial releases are unsigned and not notarized. macOS may block execution.
   --help    Show this help
 HELP
 }
@@ -73,12 +74,44 @@ while [ "$#" -gt 0 ]; do
 done
 printf '%sgitbuddy installer%s\n' "$accent" "$reset"
 step 1 'Check environment and select release'
-[ "$(uname -s)" = Darwin ] || fail 'unsupported OS; only macOS arm64 is supported'
-[ "$(uname -m)" = arm64 ] || fail 'unsupported architecture; only macOS arm64 is supported'
-for tool in curl shasum stat mktemp git id mkdir chmod mv rm tr; do
+command -v uname >/dev/null 2>&1 || fail 'required tool not found: uname'
+os=$(uname -s)
+arch=$(uname -m)
+case "$os/$arch" in
+  Darwin/arm64) platform=darwin-arm64; hash_tool=shasum ;;
+  Linux/x86_64) platform=linux-amd64; hash_tool=sha256sum ;;
+  *) fail 'unsupported OS/architecture; only macOS arm64 and Linux x86_64 are supported' ;;
+esac
+for tool in curl "$hash_tool" stat mktemp git id mkdir chmod mv rm tr; do
   command -v "$tool" >/dev/null 2>&1 || fail "required tool not found: $tool"
 done
 git --version >/dev/null 2>&1 || fail 'Git must be installed and usable'
+
+# Keep the platform-specific utility protocol here, not in path-safety checks.
+file_stat() {
+  local field=$1 path=$2 format
+  case "$os/$field" in
+    Darwin/owner) format='%u' ;;
+    Darwin/mode) format='%Lp' ;;
+    Darwin/links) format='%l' ;;
+    Darwin/identity) format='%d:%i' ;;
+    Darwin/fingerprint) format='%d:%i:%u:%p:%l:%z:%m:%c' ;;
+    Linux/owner) format='%u' ;;
+    Linux/mode) format='%a' ;;
+    Linux/links) format='%h' ;;
+    Linux/identity) format='%d:%i' ;;
+    Linux/fingerprint) format='%d:%i:%u:%f:%h:%s:%y:%z' ;;
+    *) return 1 ;;
+  esac
+  if [ "$os" = Darwin ]; then stat -f "$format" "$path"
+  else stat -c "$format" -- "$path"; fi
+}
+hash_file() {
+  local digest
+  if [ "$os" = Darwin ]; then digest=$(shasum -a 256 < "$1") || return 1
+  else digest=$(sha256sum < "$1") || return 1; fi
+  printf '%s\n' "${digest%% *}"
+}
 uid=$(id -u)
 if [ -z "$install_dir" ]; then
   [ -n "${HOME:-}" ] || fail 'HOME is unset; use --install-dir'
@@ -100,8 +133,8 @@ esac
 check_directory() {
   local directory=$1 owner mode bits
   [ ! -L "$directory" ] && [ -d "$directory" ] || fail "unsafe directory: $directory"
-  owner=$(stat -f '%u' "$directory") || fail 'cannot inspect directory owner'
-  mode=$(stat -f '%Lp' "$directory") || fail 'cannot inspect directory permissions'
+  owner=$(file_stat owner "$directory") || fail 'cannot inspect directory owner'
+  mode=$(file_stat mode "$directory") || fail 'cannot inspect directory permissions'
   bits=$((8#$mode))
   [ "$owner" = "$uid" ] || [ "$owner" = 0 ] || fail "directory is not owned by you or root: $directory"
   if [ $((bits & 0022)) -ne 0 ]; then
@@ -122,26 +155,26 @@ prepare_directory() {
 check_install_directory() {
   local mode
   prepare_directory "$install_dir"
-  [ "$(stat -f '%u' "$install_dir")" = "$uid" ] || fail 'installation directory must be owned by you'
-  mode=$(stat -f '%Lp' "$install_dir")
+  [ "$(file_stat owner "$install_dir")" = "$uid" ] || fail 'installation directory must be owned by you'
+  mode=$(file_stat mode "$install_dir")
   [ $((8#$mode & 0022)) -eq 0 ] || fail 'installation directory is writable by other users'
   [ -w "$install_dir" ] && [ -x "$install_dir" ] || fail 'installation directory is not writable/searchable'
 }
 check_install_directory
-directory_identity=$(stat -f '%d:%i' "$install_dir")
+directory_identity=$(file_stat identity "$install_dir")
 target=$install_dir/gitbuddy
 
 check_target() {
   local mode
   [ ! -L "$target" ] && [ -f "$target" ] && [ -x "$target" ] || fail "unsafe target (expected an owned executable): $target"
-  [ "$(stat -f '%u' "$target")" = "$uid" ] || fail 'target is not owned by you'
-  [ "$(stat -f '%l' "$target")" = 1 ] || fail 'target has multiple hard links'
-  mode=$(stat -f '%Lp' "$target")
+  [ "$(file_stat owner "$target")" = "$uid" ] || fail 'target is not owned by you'
+  [ "$(file_stat links "$target")" = 1 ] || fail 'target has multiple hard links'
+  mode=$(file_stat mode "$target")
   [ $((8#$mode & 0022)) -eq 0 ] || fail 'target is writable by other users'
 }
 fingerprint() {
-  stat -f '%d:%i:%u:%p:%l:%z:%m:%c' "$target" || return 1
-  shasum -a 256 < "$target" || return 1
+  file_stat fingerprint "$target" || return 1
+  hash_file "$target" || return 1
 }
 baseline=absent
 current=
@@ -228,16 +261,16 @@ trap 'interrupted 143 TERM' TERM
 # Staging in the destination directory guarantees same-filesystem rename. This
 # invocation owns only the unpredictable directory returned by mktemp.
 temp_dir=$(mktemp -d "$install_dir/.gitbuddy-install.XXXXXXXX") || fail 'cannot create staging directory'
-asset=gitbuddy-$version-darwin-arm64
+asset=gitbuddy-$version-$platform
 base_url=$repository/releases/download/v$version
 staged=$temp_dir/$asset
 step 2 'Download binary and checksums'
-download "$base_url/$asset" "$staged" 157286400 || fail "binary download failed; check connectivity and that v$version is published (not a draft) with the macOS arm64 asset"
+download "$base_url/$asset" "$staged" 157286400 || fail "binary download failed; check connectivity and that v$version is published (not a draft) with the $platform asset"
 download "$base_url/SHA256SUMS" "$temp_dir/SHA256SUMS" 1048576 || fail 'checksum download failed'
 
 step 3 'Verify checksum and release version'
 # Only one exact asset entry is accepted; never let a remote checksum manifest
-# select local filenames or ask shasum to read arbitrary paths.
+# select local filenames or ask the hash utility to read arbitrary paths.
 expected=
 matches=0
 while IFS= read -r line || [ -n "$line" ]; do
@@ -248,14 +281,17 @@ while IFS= read -r line || [ -n "$line" ]; do
   fi
 done < "$temp_dir/SHA256SUMS"
 [ "$matches" = 1 ] || fail 'SHA256SUMS must contain exactly one matching asset entry'
-actual=$(shasum -a 256 < "$staged") || fail 'cannot hash download'
-actual=${actual%% *}
-# shasum emits lowercase; accept either case in the manifest.
+actual=$(hash_file "$staged") || fail 'cannot hash download'
+# Both hash utilities emit lowercase; accept either case in the manifest.
 expected=$(printf '%s' "$expected" | tr 'A-F' 'a-f')
 [ "$actual" = "$expected" ] || fail 'download checksum mismatch'
-printf 'Warning: this release is unsigned and not notarized; macOS may block execution.\n' >&2
+if [ "$os" = Darwin ]; then
+  printf 'Warning: this release is unsigned and not notarized; macOS may block execution.\n' >&2
+fi
 chmod 755 "$staged" || fail 'cannot mark staged binary executable'
-staged_output=$("$staged" --version) || fail 'staged binary could not run --version (check macOS security requirements)'
+probe_advice='check executable permissions and system compatibility'
+if [ "$os" = Darwin ]; then probe_advice='check macOS security requirements'; fi
+staged_output=$("$staged" --version) || fail "staged binary could not run --version ($probe_advice)"
 [ "$staged_output" = "gitbuddy $version" ] || fail 'staged binary version does not match requested release'
 
 # These bounded rechecks prevent overwriting changes observed since inspection.
@@ -263,7 +299,7 @@ staged_output=$("$staged" --version) || fail 'staged binary could not run --vers
 # no portable shell primitive provides an atomic compare-and-rename.
 step 4 'Install atomically'
 check_install_directory
-[ "$(stat -f '%d:%i' "$install_dir")" = "$directory_identity" ] || fail 'installation directory changed during download'
+[ "$(file_stat identity "$install_dir")" = "$directory_identity" ] || fail 'installation directory changed during download'
 if [ "$baseline" = absent ]; then
   [ ! -e "$target" ] && [ ! -L "$target" ] || fail 'target appeared during download; rerun installer'
 else

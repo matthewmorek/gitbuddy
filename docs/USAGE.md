@@ -156,11 +156,17 @@ manually, including after reconnecting; manual errors appear in **Show errors
 and warnings**.
 
 **Install update** requires confirmation and is available only for release-built
-macOS arm64 executables named `gitbuddy` in a safe, user-owned installation.
+macOS arm64 or Linux x86_64 executables named `gitbuddy` in a safe, user-owned
+installation. Linux is part of the unreleased `0.1.2` candidate and has not yet
+passed native or hosted verification. Linux requires `/bin/bash`, `curl`, working
+Git and GNU `stat`, `sha256sum` and common utilities for installation; the app
+itself needs no Go, Python or Node. Ubuntu/GNU is the initial target; compatibility
+with musl, minimal distributions or particular kernels is not established.
 Development builds, symlinked paths and unsafe ownership/permissions require
 manual installation. Downloads are pinned to one version; checksum and
 executable-version validation precede replacement. No signing, quarantine or
-macOS security settings are changed.
+macOS security settings are changed. The unsigned/Gatekeeper warning applies only
+to macOS.
 
 Installation cannot start during a Git mutation, and Git mutations cannot start
 during installation. Quit cancels downloads and waits for installation and Git
@@ -176,8 +182,10 @@ prerelease or intentional rollback.
 ## Scope
 
 There is no daemon, filesystem watcher or PR/check integration. Refresh after
-changes made by other tools. macOS arm64 is the supported distribution target;
-a successful cross-compile does not establish support for another platform.
+changes made by other tools. Distribution targets are exactly macOS arm64 and
+Linux x86_64; Linux ARM, Intel Mac, Windows and package-manager installs are not
+supported. Native Linux and hosted trials remain pending; a cross-compile does
+not establish support.
 
 Automated tests cover temporary Git repositories/remotes, asynchronous state,
 settings, themes, keyboard interactions and offline updater fixtures. Live

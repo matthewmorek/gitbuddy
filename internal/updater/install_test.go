@@ -4,12 +4,16 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"debug/elf"
+	"debug/macho"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -21,12 +25,33 @@ import (
 var oldBytes = []byte("original executable")
 var newBytes = []byte("verified new executable")
 
+func fixtureTarget() releaseTarget {
+	if target := supportedTarget(runtime.GOOS, runtime.GOARCH); target != "" {
+		return target
+	}
+	// Isolated filesystem regressions need no native executable. Keep them
+	// runnable on other Unix hosts; only real execution tests require support.
+	return darwinARM64
+}
+
 func installFixture(t *testing.T) (*Client, string) {
 	t.Helper()
 	if os.Getuid() == 0 {
 		t.Skip("filesystem eligibility requires a non-root user")
 	}
-	dir, err := filepath.EvalSymlinks(t.TempDir())
+	var temp string
+	if runtime.GOOS == "linux" {
+		// /tmp is normally world-writable on Linux. Stage under the package
+		// directory so the real ancestor safety checks remain enabled.
+		workdir, err := os.Getwd()
+		must(t, err)
+		temp, err = os.MkdirTemp(workdir, ".gitbuddy-updater-test-")
+		must(t, err)
+		t.Cleanup(func() { _ = os.RemoveAll(temp) })
+	} else {
+		temp = t.TempDir()
+	}
+	dir, err := filepath.EvalSymlinks(temp)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -43,6 +68,7 @@ func installFixture(t *testing.T) (*Client, string) {
 	}
 	c := New("0.1.0", false)
 	c.reason, c.path, c.uid, c.baseline = "", path, os.Getuid(), baseline
+	c.target = fixtureTarget()
 	c.probe = func(context.Context, string, string) error { return nil }
 	return c, dir
 }
@@ -55,11 +81,12 @@ func serveInstall(t *testing.T, c *Client, handler http.HandlerFunc) {
 }
 
 func goodDownload(w http.ResponseWriter, r *http.Request) {
+	asset := fixtureTarget().assetName("0.2.0")
 	switch r.URL.Path {
-	case "/v0.2.0/gitbuddy-0.2.0-darwin-arm64":
+	case "/v0.2.0/" + asset:
 		w.Write(newBytes)
 	case "/v0.2.0/SHA256SUMS":
-		fmt.Fprintf(w, "%x  gitbuddy-0.2.0-darwin-arm64\n", sha256.Sum256(newBytes))
+		fmt.Fprintf(w, "%x  %s\n", sha256.Sum256(newBytes), asset)
 	default:
 		http.NotFound(w, r)
 	}
@@ -220,6 +247,43 @@ func TestInstallAtomicSuccessAndReceipt(t *testing.T) {
 	}
 }
 
+func TestInstallSelectsExactTargetAsset(t *testing.T) {
+	for _, asset := range []string{"gitbuddy-0.2.0-darwin-arm64", "gitbuddy-0.2.0-linux-amd64"} {
+		t.Run(asset, func(t *testing.T) {
+			c, dir := installFixture(t)
+			c.target = darwinARM64
+			if strings.HasSuffix(asset, "linux-amd64") {
+				c.target = linuxAMD64
+			}
+			var requests []string
+			var mu sync.Mutex
+			serveInstall(t, c, func(w http.ResponseWriter, r *http.Request) {
+				mu.Lock()
+				requests = append(requests, r.URL.Path)
+				mu.Unlock()
+				switch r.URL.Path {
+				case "/v0.2.0/" + asset:
+					w.Write(newBytes)
+				case "/v0.2.0/SHA256SUMS":
+					// Another target's entry must not shadow the exact match.
+					fmt.Fprintf(w, "%064d  other-target\n%x  %s\n", 0, sha256.Sum256(newBytes), asset)
+				default:
+					http.NotFound(w, r)
+				}
+			})
+			must(t, c.Install(context.Background(), Release{"0.2.0"}))
+			want := []string{"/v0.2.0/" + asset, "/v0.2.0/SHA256SUMS"}
+			mu.Lock()
+			defer mu.Unlock()
+			if !equalStrings(requests, want) {
+				t.Fatalf("requests = %v; want %v", requests, want)
+			}
+			assertBytes(t, c.path, newBytes)
+			assertNoStaging(t, dir)
+		})
+	}
+}
+
 func equalStrings(a, b []string) bool {
 	return strings.Join(a, "\x00") == strings.Join(b, "\x00")
 }
@@ -243,7 +307,7 @@ func TestInstallFailuresPreserveExecutable(t *testing.T) {
 				if strings.HasSuffix(r.URL.Path, "SHA256SUMS") {
 					switch kind {
 					case "checksum":
-						fmt.Fprintf(w, "%064d  gitbuddy-0.2.0-darwin-arm64\n", 0)
+						fmt.Fprintf(w, "%064d  %s\n", 0, c.target.assetName("0.2.0"))
 					case "missing manifest":
 						http.NotFound(w, r)
 					case "oversized manifest":
@@ -392,13 +456,25 @@ func TestInstallSerializationAndInput(t *testing.T) {
 // The real probe executes only this locally built test binary. No release
 // downloads or actual process replacement occur in the test suite.
 func TestMain(m *testing.M) {
+	if len(os.Args) == 2 && os.Args[1] == "--updater-eligibility" {
+		if reason := New("0.2.0", true).InstallReason(); reason != "" {
+			fmt.Fprintln(os.Stderr, reason)
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
 	if len(os.Args) == 2 && os.Args[1] == "--version" {
-		if os.Getenv("DYLD_INSERT_LIBRARIES") != "" || os.Getenv("GITHUB_TOKEN") != "" {
+		if os.Getenv("DYLD_INSERT_LIBRARIES") != "" || os.Getenv("LD_PRELOAD") != "" ||
+			os.Getenv("GITHUB_TOKEN") != "" {
 			os.Exit(9)
 		}
 		switch filepath.Base(os.Args[0]) {
 		case "verbose":
 			fmt.Print(strings.Repeat("x", 2048))
+		case "stderr":
+			fmt.Fprint(os.Stderr, "unexpected diagnostic")
+		case "trailing":
+			fmt.Print("gitbuddy 0.2.0\nextra\n")
 		case "slow":
 			time.Sleep(10 * time.Second)
 		default:
@@ -409,16 +485,34 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
-func TestRealVersionProbe(t *testing.T) {
-	if runtime.GOOS != "darwin" || runtime.GOARCH != "arm64" {
-		t.Skip("real Darwin arm64 probe requires its native platform")
+func realProbeBinary(t *testing.T) []byte {
+	t.Helper()
+	if supportedTarget(runtime.GOOS, runtime.GOARCH) == "" {
+		t.Skip("real executable probe requires a supported native platform")
 	}
 	source, err := os.Executable()
 	must(t, err)
+	if runtime.GOOS == "linux" {
+		// The test driver may use cgo (net/http); releases do not. Build the
+		// same local test fixture with the official static, non-PIE policy.
+		source = filepath.Join(t.TempDir(), "probe.test")
+		cmd := exec.Command("go", "test", "-c", "-buildmode=exe", "-o", source, ".")
+		cmd.Env = append(os.Environ(), "CGO_ENABLED=0")
+		if output, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("build static probe fixture: %v\n%s", err, output)
+		}
+	}
 	data, err := os.ReadFile(source)
 	must(t, err)
+	return data
+}
+
+func TestRealVersionProbe(t *testing.T) {
+	data := realProbeBinary(t)
 	dir := t.TempDir()
 	t.Setenv("GITHUB_TOKEN", "must-not-reach-probe")
+	t.Setenv("LD_PRELOAD", "must-not-reach-probe")
+	t.Setenv("DYLD_INSERT_LIBRARIES", "must-not-reach-probe")
 	for _, tc := range []struct {
 		name, version string
 		fail          bool
@@ -426,6 +520,8 @@ func TestRealVersionProbe(t *testing.T) {
 		{"good", "0.2.0", false},
 		{"wrong", "0.3.0", true},
 		{"verbose", "0.2.0", true},
+		{"stderr", "0.2.0", true},
+		{"trailing", "0.2.0", true},
 		{"slow", "0.2.0", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -449,26 +545,129 @@ func TestRealVersionProbe(t *testing.T) {
 	}
 }
 
-func TestInstallRealVerifiedBinary(t *testing.T) {
-	if runtime.GOOS != "darwin" || runtime.GOARCH != "arm64" {
-		t.Skip("real Darwin arm64 release fixture requires its native platform")
+func machoFixture(t *testing.T, cpu macho.Cpu, kind macho.Type) []byte {
+	t.Helper()
+	var out bytes.Buffer
+	header := struct {
+		macho.FileHeader
+		Reserved uint32
+	}{FileHeader: macho.FileHeader{Magic: macho.Magic64, Cpu: cpu, Type: kind}}
+	must(t, binary.Write(&out, binary.LittleEndian, header))
+	return out.Bytes()
+}
+
+func elfFixture(t *testing.T, class elf.Class, data elf.Data, machine elf.Machine, kind elf.Type, program elf.ProgType) []byte {
+	t.Helper()
+	var order binary.ByteOrder = binary.LittleEndian
+	if data == elf.ELFDATA2MSB {
+		order = binary.BigEndian
 	}
+	var ident [elf.EI_NIDENT]byte
+	copy(ident[:], elf.ELFMAG)
+	ident[elf.EI_CLASS], ident[elf.EI_DATA], ident[elf.EI_VERSION] = byte(class), byte(data), byte(elf.EV_CURRENT)
+	var out bytes.Buffer
+	if class == elf.ELFCLASS32 {
+		header := elf.Header32{
+			Ident: ident, Type: uint16(kind), Machine: uint16(machine), Version: uint32(elf.EV_CURRENT),
+			Ehsize: 52, Phentsize: 32, Shentsize: 40,
+		}
+		must(t, binary.Write(&out, order, header))
+	} else {
+		header := elf.Header64{
+			Ident: ident, Type: uint16(kind), Machine: uint16(machine), Version: uint32(elf.EV_CURRENT),
+			Ehsize: 64, Phentsize: 56, Shentsize: 64,
+		}
+		if program != elf.PT_NULL {
+			header.Phoff, header.Phnum = 64, 1
+		}
+		must(t, binary.Write(&out, order, header))
+		if program != elf.PT_NULL {
+			must(t, binary.Write(&out, order, elf.Prog64{Type: uint32(program)}))
+		}
+	}
+	return out.Bytes()
+}
+
+func TestExecutableValidationBeforeProbe(t *testing.T) {
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "executed")
+	mach := machoFixture(t, macho.CpuArm64, macho.TypeExec)
+	linux := elfFixture(t, elf.ELFCLASS64, elf.ELFDATA2LSB, elf.EM_X86_64, elf.ET_EXEC, elf.PT_NULL)
+	for _, tc := range []struct {
+		name   string
+		target releaseTarget
+		data   []byte
+		want   string
+	}{
+		{"macOS arm64", darwinARM64, mach, ""},
+		{"Linux x86_64", linuxAMD64, linux, ""},
+		{"truncated Mach-O", darwinARM64, mach[:16], "release is not a macOS executable"},
+		{"truncated ELF", linuxAMD64, linux[:16], "release is not a Linux ELF executable"},
+		{"ELF on macOS", darwinARM64, linux, "release is not a macOS executable"},
+		{"Mach-O on Linux", linuxAMD64, mach, "release is not a Linux ELF executable"},
+		{"script on macOS", darwinARM64, []byte("#!/bin/sh\ntouch '" + marker + "'\n"), "release is not a macOS executable"},
+		{"script on Linux", linuxAMD64, []byte("#!/bin/sh\ntouch '" + marker + "'\n"), "release is not a Linux ELF executable"},
+		{"Mach-O amd64", darwinARM64, machoFixture(t, macho.CpuAmd64, macho.TypeExec), "release is not a macOS arm64 executable"},
+		{"Mach-O dylib", darwinARM64, machoFixture(t, macho.CpuArm64, macho.TypeDylib), "release is not a macOS arm64 executable"},
+		{"ELF 32-bit", linuxAMD64, elfFixture(t, elf.ELFCLASS32, elf.ELFDATA2LSB, elf.EM_X86_64, elf.ET_EXEC, elf.PT_NULL), "release is not a Linux 64-bit little-endian x86_64 executable"},
+		{"ELF big-endian", linuxAMD64, elfFixture(t, elf.ELFCLASS64, elf.ELFDATA2MSB, elf.EM_X86_64, elf.ET_EXEC, elf.PT_NULL), "release is not a Linux 64-bit little-endian x86_64 executable"},
+		{"ELF arm64", linuxAMD64, elfFixture(t, elf.ELFCLASS64, elf.ELFDATA2LSB, elf.EM_AARCH64, elf.ET_EXEC, elf.PT_NULL), "release is not a Linux 64-bit little-endian x86_64 executable"},
+		{"ELF PIE", linuxAMD64, elfFixture(t, elf.ELFCLASS64, elf.ELFDATA2LSB, elf.EM_X86_64, elf.ET_DYN, elf.PT_NULL), "release is not a Linux 64-bit little-endian x86_64 executable"},
+		{"ELF interpreter", linuxAMD64, elfFixture(t, elf.ELFCLASS64, elf.ELFDATA2LSB, elf.EM_X86_64, elf.ET_EXEC, elf.PT_INTERP), "release is not a statically linked Linux executable"},
+		{"ELF dynamic linking", linuxAMD64, elfFixture(t, elf.ELFCLASS64, elf.ELFDATA2LSB, elf.EM_X86_64, elf.ET_EXEC, elf.PT_DYNAMIC), "release is not a statically linked Linux executable"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(dir, "candidate")
+			must(t, os.WriteFile(path, tc.data, 0755))
+			err := tc.target.validateExecutable(path)
+			if tc.want == "" {
+				must(t, err)
+				return
+			}
+			if err == nil || err.Error() != tc.want {
+				t.Fatalf("validation = %v; want %q", err, tc.want)
+			}
+			if tc.target == supportedTarget(runtime.GOOS, runtime.GOARCH) {
+				// The exact format diagnostic proves rejection happened before
+				// exec, rather than relying on an OS loader failure.
+				err := probeVersion(context.Background(), path, "0.2.0")
+				if err == nil || err.Error() != tc.want {
+					t.Fatalf("probe = %v; want pre-execution rejection %q", err, tc.want)
+				}
+			}
+		})
+	}
+	if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("invalid candidate was executed: %v", err)
+	}
+}
+
+func TestInstallRealVerifiedBinary(t *testing.T) {
+	data := realProbeBinary(t)
 	c, dir := installFixture(t)
-	source, err := os.Executable()
-	must(t, err)
-	data, err := os.ReadFile(source)
-	must(t, err)
+	asset := c.target.assetName("0.2.0")
 	serveInstall(t, c, func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasSuffix(r.URL.Path, "SHA256SUMS") {
-			fmt.Fprintf(w, "%x  gitbuddy-0.2.0-darwin-arm64\n", sha256.Sum256(data))
-		} else {
+		switch r.URL.Path {
+		case "/v0.2.0/SHA256SUMS":
+			fmt.Fprintf(w, "%x  %s\n", sha256.Sum256(data), asset)
+		case "/v0.2.0/" + asset:
 			w.Write(data)
+		default:
+			http.NotFound(w, r)
 		}
 	})
 	c.probe = probeVersion
 	must(t, c.Install(context.Background(), Release{"0.2.0"}))
 	assertBytes(t, c.path, data)
 	assertNoStaging(t, dir)
+	if c.receipt == nil {
+		t.Fatal("real verified installation did not record a restart receipt")
+	}
+	// Unlike the isolated filesystem fixtures, this child goes through New
+	// with its real executable identity and the native target eligibility gate.
+	if output, err := exec.Command(c.path, "--updater-eligibility").CombinedOutput(); err != nil || len(output) != 0 {
+		t.Fatalf("installed native release is not eligible: %v\n%s", err, output)
+	}
 }
 
 func TestDownloadSizeHeaderAndContext(t *testing.T) {

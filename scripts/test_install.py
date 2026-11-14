@@ -4,7 +4,9 @@ import errno
 import hashlib
 import os
 from pathlib import Path
+import platform
 import pty
+import shutil
 import subprocess
 import tempfile
 import threading
@@ -13,6 +15,12 @@ import unittest
 
 INSTALLER = Path(__file__).resolve().with_name("install.sh")
 REPOSITORY = "https://github.com/matthewmorek/gitbuddy"
+NATIVE_OS = platform.system()
+NATIVE_ARCH = platform.machine()
+NATIVE_TARGET = {
+    ("Darwin", "arm64"): "darwin-arm64",
+    ("Linux", "x86_64"): "linux-amd64",
+}.get((NATIVE_OS, NATIVE_ARCH))
 
 
 def binary(version):
@@ -71,6 +79,10 @@ esac
 
 class InstallerTests(unittest.TestCase):
     def setUp(self):
+        if NATIVE_TARGET is None:
+            self.skipTest(
+                "Installer safety tests require a supported native utility set"
+            )
         self.temp = tempfile.TemporaryDirectory(prefix="gitbuddy-installer-")
         self.addCleanup(self.temp.cleanup)
         # macOS /var is a symlink; the real installer deliberately refuses it.
@@ -88,7 +100,11 @@ class InstallerTests(unittest.TestCase):
         )
         self.tool(
             "uname",
-            '#!/bin/bash\ncase $1 in -s) echo "${FIXTURE_OS:-Darwin}";; -m) echo "${FIXTURE_ARCH:-arm64}";; *) exit 1;; esac\n',
+            '#!/bin/bash\ncase $1 in -s) echo "${FIXTURE_OS:-'
+            + NATIVE_OS
+            + '}";; -m) echo "${FIXTURE_ARCH:-'
+            + NATIVE_ARCH
+            + '}";; *) exit 1;; esac\n',
         )
         self.tool("curl", CURL)
         self.release()
@@ -100,7 +116,7 @@ class InstallerTests(unittest.TestCase):
 
     def release(self, version="0.2.0", payload=None):
         self.version = version
-        self.asset = f"gitbuddy-{version}-darwin-arm64"
+        self.asset = f"gitbuddy-{version}-{NATIVE_TARGET}"
         content = binary(version) if payload is None else payload
         (self.root / "binary").write_text(content)
         self.checksum = hashlib.sha256(content.encode()).hexdigest()
@@ -435,12 +451,67 @@ class InstallerTests(unittest.TestCase):
         self.assertFalse((self.home / ".local").exists())
 
     def test_unsupported_platform_before_network(self):
-        for env in [{"FIXTURE_OS": "Linux"}, {"FIXTURE_ARCH": "x86_64"}]:
+        for system, arch in [
+            ("Linux", "aarch64"),
+            ("Linux", "arm64"),
+            ("Darwin", "x86_64"),
+            ("FreeBSD", "x86_64"),
+        ]:
+            env = {"FIXTURE_OS": system, "FIXTURE_ARCH": arch}
             result = self.run_installer(**env)
             self.assertEqual(result.returncode, 1)
             self.assertIn("unsupported", result.stderr)
         self.assertEqual(self.requests(), [])
         self.assertFalse((self.home / ".local").exists())
+
+    @unittest.skipUnless(
+        NATIVE_TARGET == "linux-amd64", "Requires real GNU/Linux utilities"
+    )
+    def test_linux_exact_asset_and_no_macos_security_advice(self):
+        prior = self.existing()
+        result = self.run_installer()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(
+            f"{REPOSITORY}/releases/download/v{self.version}/gitbuddy-{self.version}-linux-amd64",
+            self.requests(),
+        )
+        self.assertNotEqual(self.target.read_text(), prior)
+        self.assertNotIn("macOS", result.stderr)
+        self.assertNotIn("notarized", result.stderr)
+        self.assertNotIn("Gatekeeper", result.stderr)
+        self.preserved(binary(self.version))
+
+    def test_missing_required_utilities_before_download(self):
+        hash_tool = "shasum" if NATIVE_OS == "Darwin" else "sha256sum"
+        required = [
+            "uname",
+            "curl",
+            hash_tool,
+            "stat",
+            "mktemp",
+            "git",
+            "id",
+            "mkdir",
+            "chmod",
+            "mv",
+            "rm",
+            "tr",
+        ]
+        for missing in ["stat", hash_tool, "git"]:
+            with self.subTest(missing=missing):
+                tools = self.root / ("missing-" + missing)
+                tools.mkdir()
+                for tool in required:
+                    if tool != missing:
+                        source = self.tools / tool
+                        if not source.exists():
+                            source = Path(shutil.which(tool, path="/usr/bin:/bin"))
+                        (tools / tool).symlink_to(source)
+                result = self.run_installer(PATH=str(tools))
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertIn("required tool not found: " + missing, result.stderr)
+                self.assertEqual(self.requests(), [])
+                self.assertFalse((self.home / ".local").exists())
 
     def test_latest_url_exact_repository_and_stable_version(self):
         prior = self.existing()
@@ -504,9 +575,12 @@ class InstallerTests(unittest.TestCase):
         result = self.run_installer()
         self.assertEqual(result.returncode, 1)
         self.assertIn("could not run --version", result.stderr)
-        self.assertLess(
-            result.stderr.index("unsigned"), result.stderr.index("probe started")
-        )
+        if NATIVE_OS == "Darwin":
+            self.assertLess(
+                result.stderr.index("unsigned"), result.stderr.index("probe started")
+            )
+        else:
+            self.assertNotIn("macOS", result.stderr)
         self.preserved(prior)
 
     def test_unusable_git_before_download(self):

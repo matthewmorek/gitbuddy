@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""Build the native, unsigned macOS arm64 bundle using locally available Go sources."""
+"""Build a native darwin/arm64 or linux/amd64 bundle from cached Go sources.
+
+Before this offline step, resolve executable dependencies for BOTH targets:
+  GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 go list -mod=readonly -deps ./cmd/gitbuddy
+  GOOS=linux GOARCH=amd64 GOAMD64=v1 CGO_ENABLED=0 go list -mod=readonly -deps ./cmd/gitbuddy
+Use the same source and Go toolchain on both native builders.
+"""
 
 import argparse
 import hashlib
@@ -16,40 +22,63 @@ ROOT = Path(__file__).resolve().parent.parent
 STABLE = r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)"
 LEGAL = re.compile(r"^(licen[cs]e|copying|notice|authors|patents)([._-]|$)", re.I)
 LICENSE = re.compile(r"^(licen[cs]e|copying)([._-]|$)", re.I)
+TARGETS = ("darwin-arm64", "linux-amd64")
 
 
-def go_output(*args):
-    # Release preparation must not change manifests or fetch missing source. CI
-    # resolves dependencies during go test; local builders must do so separately.
+def native_target():
+    target = {
+        ("Darwin", "arm64"): "darwin-arm64",
+        ("Linux", "x86_64"): "linux-amd64",
+    }.get((platform.system(), platform.machine()))
+    if target is None:
+        raise ValueError(
+            "Only native darwin/arm64 and linux/amd64 builds are supported."
+        )
+    return target
+
+
+def go_output(*args, target=None):
+    # Never change manifests or fetch missing source here. Native tests alone may
+    # not cache the other target's dependencies; resolve both target lists first.
+    goos, goarch = (target or native_target()).split("-")
     env = dict(
         os.environ,
         CGO_ENABLED="0",
-        GOOS="darwin",
-        GOARCH="arm64",
+        GOOS=goos,
+        GOARCH=goarch,
+        GOAMD64="v1",
         GOPROXY="off",
+        GONOPROXY="none",
         # Select a compatible cached toolchain when the PATH launcher is older.
         # GOPROXY=off still prevents downloading missing toolchains or modules;
         # keep checksum verification enabled for the cached Go distribution.
         GOTOOLCHAIN="auto",
         GOFLAGS="-mod=readonly",
+        GOWORK="off",
     )
     return subprocess.check_output(["go", *args], cwd=ROOT, env=env, text=True)
 
 
 def module_notices():
-    """Inventory only modules supplying packages to the executable."""
+    """Sorted, deduplicated legal texts for executable modules on either target."""
     # Package metadata already includes the resolved module and replacement.
     # Listing the entire module graph would also require uncached metadata for
     # unused widgets/upstream tests, breaking offline builds on clean CI runners.
-    stream = go_output("list", "-deps", "-json", "./cmd/gitbuddy")
     decoder = json.JSONDecoder()
     modules = {}
-    while stream.strip():
-        package, end = decoder.raw_decode(stream.lstrip())
-        module = package.get("Module")
-        if module and not module.get("Main"):
-            modules[module["Path"]] = module
-        stream = stream.lstrip()[end:]
+    for target in TARGETS:
+        stream = go_output("list", "-deps", "-json", "./cmd/gitbuddy", target=target)
+        while stream.strip():
+            package, end = decoder.raw_decode(stream.lstrip())
+            module = package.get("Module")
+            if module and not module.get("Main"):
+                previous = modules.get(module["Path"])
+                if previous is not None and previous != module:
+                    raise ValueError(
+                        f"Inconsistent dependency metadata for {module['Path']}."
+                    )
+                modules[module["Path"]] = module
+            stream = stream.lstrip()[end:]
     sections = []
     for module in sorted(modules.values(), key=lambda item: item["Path"]):
         actual = module.get("Replace", module)
@@ -106,10 +135,7 @@ def main():
         "--release", action="store_true", help="Require a stable X.Y.Z source version"
     )
     args = parser.parse_args()
-    if platform.system() != "Darwin" or platform.machine() != "arm64":
-        raise ValueError(
-            "Only native macOS arm64 builds are supported; other targets require executed verification first."
-        )
+    target = native_target()
     version = (ROOT / "internal/buildinfo/version.txt").read_text().strip()
     stable = re.fullmatch(STABLE, version)
     # Development versions use canonical SemVer prerelease identifiers, without
@@ -127,18 +153,20 @@ def main():
     (ROOT / "internal/buildinfo/notices.txt").write_text(notices, encoding="utf-8")
     outdir = ROOT / "dist"
     outdir.mkdir(exist_ok=True)
-    filename = f"gitbuddy-{version}-darwin-arm64"
+    filename = f"gitbuddy-{version}-{target}"
     binary = outdir / filename
     go_output(
         "build",
         "-trimpath",
         "-buildvcs=false",
+        "-buildmode=exe",
         "-ldflags",
         "-X github.com/matthewmorek/gitbuddy/internal/buildinfo.Distribution="
         + ("release" if args.release else "source"),
         "-o",
         str(binary),
         "./cmd/gitbuddy",
+        target=target,
     )
     binary.chmod(0o755)
     result = subprocess.run(

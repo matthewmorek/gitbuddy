@@ -14,14 +14,15 @@ permissions:
   contents: read
 
 jobs:
-  macos-arm64:
+  validate:
     if: github.repository == 'matthewmorek/gitbuddy' && github.event.created && !github.event.deleted && !github.event.forced
-    runs-on: macos-15
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     outputs:
       commit: ${{ steps.release.outputs.commit }}
       tag_oid: ${{ steps.release.outputs.tag_oid }}
       version: ${{ steps.release.outputs.version }}
+      tag: ${{ steps.release.outputs.tag }}
     env:
       RELEASE_TAG: ${{ github.ref_name }}
     steps:
@@ -34,15 +35,11 @@ jobs:
           ref: ${{ github.sha }}
           fetch-depth: 0
           persist-credentials: false
-      - uses: actions/setup-go@v6
-        with:
-          go-version-file: go.mod
-      - name: Check repository, architecture, tag and source version agree
+      - name: Check repository, tag and source version agree
         id: release
         shell: bash
         run: |
           set -euo pipefail
-          test "$(uname -m)" = arm64
           test "$(git remote get-url origin)" = https://github.com/matthewmorek/gitbuddy
           test "$(git rev-parse HEAD)" = "$(git rev-parse "$GITHUB_SHA^{commit}")"
           test "$(git rev-parse HEAD)" = "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")"
@@ -51,54 +48,116 @@ jobs:
           echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
           echo "tag_oid=$(git rev-parse "refs/tags/$RELEASE_TAG")" >> "$GITHUB_OUTPUT"
           echo "version=${RELEASE_TAG#v}" >> "$GITHUB_OUTPUT"
+          echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+
+  native:
+    needs: validate
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            target: darwin-arm64
+            os: Darwin
+            arch: arm64
+          - runner: ubuntu-24.04
+            target: linux-amd64
+            os: Linux
+            arch: x86_64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    env:
+      RELEASE_TAG: ${{ needs.validate.outputs.tag }}
+      RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+      EXPECTED_COMMIT: ${{ needs.validate.outputs.commit }}
+      EXPECTED_TAG_OID: ${{ needs.validate.outputs.tag_oid }}
+      TARGET: ${{ matrix.target }}
+      EXPECTED_OS: ${{ matrix.os }}
+      EXPECTED_ARCH: ${{ matrix.arch }}
+      GOTOOLCHAIN: local
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.validate.outputs.commit }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify native host and validated source
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(uname -s)" = "$EXPECTED_OS"
+          test "$(uname -m)" = "$EXPECTED_ARCH"
+          test "$(git rev-parse HEAD)" = "$EXPECTED_COMMIT"
+          test "$(git rev-parse "$GITHUB_SHA^{commit}")" = "$EXPECTED_COMMIT"
+          test "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")" = "$EXPECTED_COMMIT"
+          test "$(git rev-parse "refs/tags/$RELEASE_TAG")" = "$EXPECTED_TAG_OID"
+          test "$RELEASE_TAG" = "v$RELEASE_VERSION"
+          test "$RELEASE_VERSION" = "$(cat internal/buildinfo/version.txt)"
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - name: Require exact source Go toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(go env GOVERSION)" = "go$(awk '$1 == "go" {print $2}' go.mod)"
       - run: go test ./...
+      - run: go test -race ./...
       - run: go vet ./...
+      - run: python3 -m unittest discover -s scripts -v
       - run: |
-          python3 scripts/test_release.py -v
-          python3 scripts/test_install.py -v
-          python3 scripts/test_workflow.py -v
-      - run: bash -n scripts/install.sh
+          sh -n scripts/install.sh
+          bash -n scripts/install.sh
       - run: python3 scripts/smoke-terminal.py
+      - name: Resolve both target dependency sets before offline build
+        run: |
+          GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 go list -mod=readonly -deps ./cmd/gitbuddy
+          GOOS=linux GOARCH=amd64 GOAMD64=v1 CGO_ENABLED=0 go list -mod=readonly -deps ./cmd/gitbuddy
       - run: python3 scripts/build.py --release
       - name: Execute standalone Go binary
         shell: bash
-        run: python3 scripts/smoke-terminal.py --binary "dist/gitbuddy-${RELEASE_TAG#v}-darwin-arm64"
-      - name: Check asset checksums
-        working-directory: dist
-        run: shasum -a 256 -c SHA256SUMS
-      - name: Validate exact release bundle and notes
-        run: python3 scripts/check-release.py "$RELEASE_TAG"
+        run: python3 scripts/smoke-terminal.py --binary "dist/gitbuddy-$RELEASE_VERSION-$TARGET"
+      - name: Validate native release bundle and notes
+        run: python3 scripts/check-release.py "$RELEASE_TAG" dist --target "$TARGET"
       - uses: actions/upload-artifact@v4
         with:
-          name: gitbuddy-${{ github.ref_name }}-darwin-arm64
+          name: gitbuddy-${{ needs.validate.outputs.tag }}-${{ matrix.target }}
           path: |
-            dist/gitbuddy-${{ steps.release.outputs.version }}-darwin-arm64
+            dist/gitbuddy-${{ needs.validate.outputs.version }}-${{ matrix.target }}
             dist/SHA256SUMS
             dist/THIRD_PARTY_NOTICES.txt
             dist/install.sh
           if-no-files-found: error
 
   draft:
-    needs: macos-arm64
+    needs: [validate, native]
     runs-on: macos-15
     timeout-minutes: 10
     permissions:
       contents: write
     env:
-      RELEASE_TAG: ${{ github.ref_name }}
-      RELEASE_VERSION: ${{ needs.macos-arm64.outputs.version }}
-      EXPECTED_TAG_OID: ${{ needs.macos-arm64.outputs.tag_oid }}
+      RELEASE_TAG: ${{ needs.validate.outputs.tag }}
+      RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+      EXPECTED_TAG_OID: ${{ needs.validate.outputs.tag_oid }}
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ needs.macos-arm64.outputs.commit }}
+          ref: ${{ needs.validate.outputs.commit }}
           persist-credentials: false
       - uses: actions/download-artifact@v4
         with:
-          name: gitbuddy-${{ github.ref_name }}-darwin-arm64
-          path: dist
-      - name: Revalidate transferred bundle and prepare notes
-        run: python3 scripts/check-release.py "$RELEASE_TAG" > "$RUNNER_TEMP/gitbuddy-release-notes.md"
+          name: gitbuddy-${{ needs.validate.outputs.tag }}-darwin-arm64
+          path: artifacts/darwin-arm64
+      - uses: actions/download-artifact@v4
+        with:
+          name: gitbuddy-${{ needs.validate.outputs.tag }}-linux-amd64
+          path: artifacts/linux-amd64
+      - name: Assemble and revalidate transferred bundles and prepare notes
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/assemble-release.py "$RELEASE_TAG" --darwin-arm64 artifacts/darwin-arm64 --linux-amd64 artifacts/linux-amd64 --output release-bundle
+          python3 scripts/check-release.py "$RELEASE_TAG" release-bundle > "$RUNNER_TEMP/gitbuddy-release-notes.md"
       - name: Create draft without changing tags or existing releases
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -121,7 +180,8 @@ jobs:
             "${flags[@]}" \
             --title "Gitbuddy $RELEASE_VERSION" \
             --notes-file "$RUNNER_TEMP/gitbuddy-release-notes.md" \
-            "dist/gitbuddy-$RELEASE_VERSION-darwin-arm64" \
-            dist/SHA256SUMS dist/THIRD_PARTY_NOTICES.txt dist/install.sh
+            "release-bundle/gitbuddy-$RELEASE_VERSION-darwin-arm64" \
+            "release-bundle/gitbuddy-$RELEASE_VERSION-linux-amd64" \
+            release-bundle/SHA256SUMS release-bundle/THIRD_PARTY_NOTICES.txt release-bundle/install.sh
           verify_tag
           echo 'Verified draft created. Inspect its assets before publishing. For 0.1.0, keep prerelease enabled for the download/Gatekeeper trial before stable promotion.' >> "$GITHUB_STEP_SUMMARY"

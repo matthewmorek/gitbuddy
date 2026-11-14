@@ -25,18 +25,23 @@ of truth; Gitbuddy adds a view over it.
 
 ## Install
 
-**Requirements:** macOS on Apple Silicon (`arm64`), an interactive terminal, and
-an installed, working Git. Intel Macs, Linux and Windows are not supported yet.
-The downloaded app needs no Go, Python, Bun, Node or GitHub CLI.
+**Candidate targets:** macOS on Apple Silicon (`darwin/arm64`) and Linux x86_64
+(`linux/amd64`, reported by `uname` as `x86_64`). Both require an interactive
+terminal and working Git. The Linux installer also needs Bash at
+`/bin/bash`, `curl`, and GNU `stat`, `sha256sum` and common
+utilities. The installed app needs no Go, Python or Node. Intel Macs, Linux ARM
+and Windows are not supported. Linux support is not yet released or natively
+verified; Ubuntu/GNU is the initial target, not a claim about musl, minimal
+distributions or kernel compatibility.
 
 > **Early prerelease:** the macOS binary is unsigned and not notarized. Gatekeeper
 > may block it. Do not disable
 > Gatekeeper or remove quarantine to make it run. Report a blocked installation
 > [as an issue](https://github.com/matthewmorek/gitbuddy/issues).
 
-### Install the current prerelease
+### Install the historical macOS prerelease
 
-The [0.1.1-beta release](https://github.com/matthewmorek/gitbuddy/releases/tag/v0.1.1)
+The historical [0.1.1-beta release](https://github.com/matthewmorek/gitbuddy/releases/tag/v0.1.1)
 uses tag `v0.1.1` and executable version `0.1.1`; `-beta` is its display title.
 Install it in one command:
 
@@ -47,6 +52,7 @@ curl -fsSL https://matthewmorek.github.io/gitbuddy/install.sh | sh -s -- --versi
 The installer shows download, verification and installation progress, then tells
 you how to launch Gitbuddy. It runs without prompts. `--version 0.1.1` explicitly
 selects the current prerelease; it is not treated as a stable release.
+This release has no Linux asset and must not be used to install on Linux.
 
 It installs to `~/.local/bin/gitbuddy`, verifying the binary's SHA-256 checksum
 and version before replacement. No `sudo`, shell-profile edits or preference
@@ -70,15 +76,17 @@ curl -fsSL https://matthewmorek.github.io/gitbuddy/install.sh | sh -s -- --versi
 
 ### Install a stable release
 
-Once a stable release is available, omit the version pin:
+When a stable release with an asset for your platform is available, omit the version pin:
 
 ```sh
 curl -fsSL https://matthewmorek.github.io/gitbuddy/install.sh | sh
 ```
 
 This selects the latest **stable** release and refuses an implicit downgrade.
-Until then, use the pinned prerelease command above. Drafts cannot be downloaded;
-prereleases are excluded from “latest”.
+The `0.1.2` candidate is not yet a released Linux-capable version. Drafts cannot
+be downloaded; prereleases are excluded from stable discovery. A prerelease may
+be installed with an explicit pin for testing, but does not enable in-app
+discovery.
 
 ### Prefer to inspect the script?
 
@@ -149,8 +157,8 @@ to the latest stable version:
 curl -fsSL https://matthewmorek.github.io/gitbuddy/install.sh | sh
 ```
 
-Settings are preserved. Source builds, symlinked executables and installations
-with unsafe permissions cannot self-update; use the shell installer in a safe,
+Settings are preserved. Source builds, symlinked executables, root/system
+installations and installations with unsafe permissions cannot self-update; use the shell installer in a safe,
 user-owned directory. Set `GITBUDDY_NO_UPDATE_CHECK=1` to disable the automatic app
 check; manual checking and automatic Git fetching remain separate.
 
@@ -170,7 +178,7 @@ that folder manually if you want to forget your settings too.
 ## Contribute
 
 [Report a bug or suggest an improvement](https://github.com/matthewmorek/gitbuddy/issues).
-For a bug, include your Gitbuddy version, macOS version/architecture and a minimal
+For a bug, include your Gitbuddy version, OS/architecture and a minimal
 reproduction without private repository data. Discuss larger changes in an issue
 before implementing them.
 

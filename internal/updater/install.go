@@ -5,7 +5,6 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
-	"debug/macho"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -14,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 )
@@ -45,6 +45,9 @@ func (c *Client) Install(ctx context.Context, release Release) error {
 	}()
 	if c.reason != "" {
 		return errors.New(c.reason)
+	}
+	if c.target == "" {
+		return errors.New(unsupportedTargetReason)
 	}
 	if !stable(c.version) || !stable(release.Version) || !newer(release.Version, c.version) {
 		return errors.New("install requires a strictly newer stable X.Y.Z release")
@@ -82,7 +85,7 @@ func (c *Client) Install(ctx context.Context, release Release) error {
 			_ = root.RemoveAll(stage)
 		}
 	}()
-	asset := "gitbuddy-" + release.Version + "-darwin-arm64"
+	asset := c.target.assetName(release.Version)
 	base := c.downloadBase + "/v" + release.Version + "/"
 	staged := stage + "/" + asset
 	f, err := root.OpenFile(staged, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
@@ -251,14 +254,9 @@ func (b *limitedOutput) Write(p []byte) (int, error) {
 }
 
 func probeVersion(ctx context.Context, path, version string) error {
-	format, err := macho.Open(path)
-	if err != nil {
-		return errors.New("release is not a macOS executable")
-	}
-	valid := format.Cpu == macho.CpuArm64 && format.Type == macho.TypeExec
-	_ = format.Close()
-	if !valid {
-		return errors.New("release is not a macOS arm64 executable")
+	target := supportedTarget(runtime.GOOS, runtime.GOARCH)
+	if err := target.validateExecutable(path); err != nil {
+		return err
 	}
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
@@ -271,7 +269,10 @@ func probeVersion(ctx context.Context, path, version string) error {
 	var stdout, stderr limitedOutput
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("cannot run verified release (macOS security may block it): %w", err)
+		if target == darwinARM64 {
+			return fmt.Errorf("cannot run verified release (macOS security may block it): %w", err)
+		}
+		return fmt.Errorf("cannot run verified release (check Linux execution permissions and mount options): %w", err)
 	}
 	if stdout.buffer.String() != "gitbuddy "+version+"\n" || stderr.buffer.Len() != 0 {
 		return errors.New("release did not report the exact requested version")

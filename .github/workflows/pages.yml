@@ -25,19 +25,49 @@ permissions:
   contents: read
 
 jobs:
-  package:
-    runs-on: macos-15
+  verify:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            os: Darwin
+            arch: arm64
+          - runner: ubuntu-24.04
+            os: Linux
+            arch: x86_64
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 10
+    env:
+      EXPECTED_OS: ${{ matrix.os }}
+      EXPECTED_ARCH: ${{ matrix.arch }}
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ github.sha }}
           persist-credentials: false
+      - name: Verify installer host
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(uname -s)" = "$EXPECTED_OS"
+          test "$(uname -m)" = "$EXPECTED_ARCH"
       - name: Verify installer
         run: |
           sh -n scripts/install.sh
           bash -n scripts/install.sh
           python3 scripts/test_install.py -v
           python3 scripts/test_workflow.py -v
+
+  package:
+    needs: verify
+    runs-on: macos-15
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
       - name: Package public installer
         run: |
           mkdir _site

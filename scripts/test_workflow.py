@@ -1,8 +1,11 @@
 """Test the workflow's actual draft shell against an offline GitHub fixture."""
 
 from pathlib import Path
+import os
 import re
+import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -17,7 +20,11 @@ def step_script(name, workflow=WORKFLOW):
     marker = f"      - name: {name}\n"
     if text.count(marker) != 1:
         raise ValueError("Expected one named workflow step: " + name)
-    step = text.split(marker, 1)[1].split("\n      - ", 1)[0]
+    step = re.split(
+        r"\n(?:      - |  [a-z][a-z0-9-]*:\n)",
+        text.split(marker, 1)[1],
+        maxsplit=1,
+    )[0]
     marker = "        run: |\n"
     if step.count(marker) != 1:
         raise ValueError("Expected one literal run block: " + name)
@@ -29,7 +36,9 @@ def step_script(name, workflow=WORKFLOW):
 
 DRAFT = step_script("Create draft without changing tags or existing releases")
 VALIDATE = step_script("Validate stable tag input")
-VERIFY = step_script("Check repository, architecture, tag and source version agree")
+VERIFY = step_script("Check repository, tag and source version agree")
+NATIVE = step_script("Verify native host and validated source")
+ASSEMBLE = step_script("Assemble and revalidate transferred bundles and prepare notes")
 GH = r"""#!/bin/bash
 set -eu
 printf '%s\n' "$@" >> "$FIXTURE_ROOT/arguments"
@@ -108,20 +117,33 @@ class WorkflowTests(unittest.TestCase):
         root, result, args, created = self.run_draft()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue(created)
-        for flag in ["--verify-tag", "--draft", "--prerelease", "--latest=false"]:
-            self.assertIn(flag, args)
+        self.assertEqual((root / "tag-count").read_text(), "2")
+        self.assertEqual(args.count("create"), 1)
+        start = args.index("release")
+        end = args.index("api", start)
         self.assertEqual(
-            [arg for arg in args if arg.startswith("dist/")],
+            args[start:end],
             [
-                "dist/gitbuddy-0.1.0-darwin-arm64",
-                "dist/SHA256SUMS",
-                "dist/THIRD_PARTY_NOTICES.txt",
-                "dist/install.sh",
+                "release",
+                "create",
+                "v0.1.0",
+                "--repo",
+                "matthewmorek/gitbuddy",
+                "--verify-tag",
+                "--draft",
+                "--latest=false",
+                "--prerelease",
+                "--title",
+                "Gitbuddy 0.1.0",
+                "--notes-file",
+                str(root / "gitbuddy-release-notes.md"),
+                "release-bundle/gitbuddy-0.1.0-darwin-arm64",
+                "release-bundle/gitbuddy-0.1.0-linux-amd64",
+                "release-bundle/SHA256SUMS",
+                "release-bundle/THIRD_PARTY_NOTICES.txt",
+                "release-bundle/install.sh",
             ],
         )
-        self.assertEqual((root / "tag-count").read_text(), "2")
-        self.assertNotIn("--target", args)
-        self.assertEqual(args.count("create"), 1)
 
     def test_subsequent_release_stays_draft_without_prerelease_flag(self):
         _, result, args, created = self.run_draft(version="0.1.1")
@@ -130,7 +152,8 @@ class WorkflowTests(unittest.TestCase):
         for flag in ["--verify-tag", "--draft", "--latest=false"]:
             self.assertIn(flag, args)
         self.assertNotIn("--prerelease", args)
-        self.assertIn("dist/gitbuddy-0.1.1-darwin-arm64", args)
+        self.assertIn("release-bundle/gitbuddy-0.1.1-darwin-arm64", args)
+        self.assertIn("release-bundle/gitbuddy-0.1.1-linux-amd64", args)
         self.assertNotIn("edit", args)
 
     def test_only_new_version_tag_pushes_and_readonly_build(self):
@@ -142,27 +165,64 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn(
             "group: release-${{ github.ref }}\n  cancel-in-progress: false", text
         )
-        build = text.split("  macos-arm64:\n", 1)[1].split("\n  draft:", 1)[0]
+        validate = text.split("  validate:\n", 1)[1].split("\n  native:", 1)[0]
+        build = text.split("  native:\n", 1)[1].split("\n  draft:", 1)[0]
         self.assertIn(
             "github.repository == 'matthewmorek/gitbuddy' && github.event.created && !github.event.deleted && !github.event.forced",
-            build,
+            validate,
         )
         self.assertIn("permissions:\n  contents: read", text)
         self.assertNotIn("contents: write", build)
-        self.assertIn("runs-on: macos-15", build)
+        self.assertNotIn("contents: write", validate)
+        self.assertNotIn("setup-go", validate)
+        self.assertIn("needs: validate", build)
+        self.assertIn("fail-fast: false", build)
+        self.assertIn("runs-on: ${{ matrix.runner }}", build)
+        self.assertEqual(
+            re.findall(
+                r"- runner: (\S+)\n +target: (\S+)\n +os: (\S+)\n +arch: (\S+)", build
+            ),
+            [
+                ("macos-15", "darwin-arm64", "Darwin", "arm64"),
+                ("ubuntu-24.04", "linux-amd64", "Linux", "x86_64"),
+            ],
+        )
         self.assertIn("go-version-file: go.mod", build)
-        self.assertIn("RELEASE_TAG: ${{ github.ref_name }}", build)
-        self.assertIn("ref: ${{ github.sha }}", build)
-        self.assertIn("fetch-depth: 0", build)
-        self.assertIn("persist-credentials: false", build)
+        self.assertIn("GOTOOLCHAIN: local", build)
+        self.assertIn('test "$(go env GOVERSION)" = "go$(awk', build)
+        self.assertIn("RELEASE_TAG: ${{ github.ref_name }}", validate)
+        self.assertIn("ref: ${{ github.sha }}", validate)
+        for job in [validate, build]:
+            self.assertIn("fetch-depth: 0", job)
+            self.assertIn("persist-credentials: false", job)
+        for name, output in [
+            ("RELEASE_TAG", "tag"),
+            ("RELEASE_VERSION", "version"),
+            ("EXPECTED_COMMIT", "commit"),
+            ("EXPECTED_TAG_OID", "tag_oid"),
+        ]:
+            self.assertIn(f"{name}: ${{{{ needs.validate.outputs.{output} }}}}", build)
+        self.assertIn("ref: ${{ needs.validate.outputs.commit }}", build)
         for command in [
             "go test ./...",
+            "go test -race ./...",
             "go vet ./...",
+            "python3 -m unittest discover -s scripts -v",
             "python3 scripts/build.py --release",
-            "python3 scripts/check-release.py",
+            'python3 scripts/check-release.py "$RELEASE_TAG" dist --target "$TARGET"',
             "python3 scripts/smoke-terminal.py",
+            'python3 scripts/smoke-terminal.py --binary "dist/gitbuddy-$RELEASE_VERSION-$TARGET"',
+            "sh -n scripts/install.sh",
+            "bash -n scripts/install.sh",
         ]:
             self.assertIn(command, build)
+        for command in [
+            "GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 go list -mod=readonly -deps ./cmd/gitbuddy",
+            "GOOS=linux GOARCH=amd64 GOAMD64=v1 CGO_ENABLED=0 go list -mod=readonly -deps ./cmd/gitbuddy",
+        ]:
+            self.assertLess(
+                build.index(command), build.index("python3 scripts/build.py --release")
+            )
         self.assertNotRegex(text.lower(), r"\bbun\b|setup-bun")
         # Explicit upload list: no stale wildcard assets or different-run download.
         uploaded = build.split("          path: |\n", 1)[1].split(
@@ -171,7 +231,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(
             [line.strip() for line in uploaded.splitlines()],
             [
-                "dist/gitbuddy-${{ steps.release.outputs.version }}-darwin-arm64",
+                "dist/gitbuddy-${{ needs.validate.outputs.version }}-${{ matrix.target }}",
                 "dist/SHA256SUMS",
                 "dist/THIRD_PARTY_NOTICES.txt",
                 "dist/install.sh",
@@ -179,11 +239,39 @@ class WorkflowTests(unittest.TestCase):
         )
         draft = text.split("\n  draft:\n", 1)[1]
         self.assertNotIn("inputs.", text)
-        self.assertIn("needs: macos-arm64", draft)
-        self.assertIn("ref: ${{ needs.macos-arm64.outputs.commit }}", draft)
+        self.assertIn("needs: [validate, native]", draft)
+        self.assertNotIn("always()", draft)
+        self.assertNotIn("continue-on-error", text)
+        self.assertEqual(text.count("contents: write"), 1)
+        self.assertIn("ref: ${{ needs.validate.outputs.commit }}", draft)
         self.assertIn("persist-credentials: false", draft)
         self.assertNotIn("setup-go", draft)
-        self.assertNotIn("run-id:", draft)
+        self.assertEqual(
+            re.findall(
+                r"uses: actions/download-artifact@v4\n        with:\n"
+                r"          name: ([^\n]+)\n          path: ([^\n]+)",
+                draft,
+            ),
+            [
+                (
+                    "gitbuddy-${{ needs.validate.outputs.tag }}-darwin-arm64",
+                    "artifacts/darwin-arm64",
+                ),
+                (
+                    "gitbuddy-${{ needs.validate.outputs.tag }}-linux-amd64",
+                    "artifacts/linux-amd64",
+                ),
+            ],
+        )
+        self.assertEqual(draft.count("actions/download-artifact@v4"), 2)
+        for forbidden in [
+            "run-id:",
+            "github-token:",
+            "merge-multiple:",
+            "pattern:",
+            "repository:",
+        ]:
+            self.assertNotIn(forbidden, draft)
 
     def test_tag_validation_rejects_nonstable_and_ambiguous_versions(self):
         for tag, valid in [
@@ -208,10 +296,7 @@ class WorkflowTests(unittest.TestCase):
     def test_source_preflight_binds_event_tag_main_and_version(self):
         # Execute the actual shell with offline Git/platform boundaries. This
         # tests fail-closed ordering, not GitHub's hosted event/checkout behavior.
-        import os
-        import sys
-
-        for failure in ["", "origin", "event", "tag", "main", "version", "arch"]:
+        for failure in ["", "origin", "event", "tag", "main", "version"]:
             with (
                 self.subTest(failure=failure),
                 tempfile.TemporaryDirectory(
@@ -221,17 +306,9 @@ class WorkflowTests(unittest.TestCase):
                 root = Path(directory)
                 tools = root / "tools"
                 tools.mkdir()
-                for name, body in [
-                    ("git", GIT),
-                    (
-                        "uname",
-                        "#!/bin/bash\necho "
-                        + ("x86_64" if failure == "arch" else "arm64"),
-                    ),
-                ]:
-                    tool = tools / name
-                    tool.write_text(body)
-                    tool.chmod(0o755)
+                tool = tools / "git"
+                tool.write_text(GIT)
+                tool.chmod(0o755)
                 (tools / "python3").symlink_to(sys.executable)
                 version = root / "internal/buildinfo/version.txt"
                 version.parent.mkdir(parents=True)
@@ -261,8 +338,119 @@ class WorkflowTests(unittest.TestCase):
                 else:
                     self.assertEqual(
                         output.read_text(),
-                        f"commit={1:040d}\ntag_oid=annotated-tag-object\nversion=0.1.0\n",
+                        f"commit={1:040d}\ntag_oid=annotated-tag-object\nversion=0.1.0\ntag=v0.1.0\n",
                     )
+
+    def test_native_host_and_source_binding_fail_closed(self):
+        for system, arch in [("Darwin", "arm64"), ("Linux", "x86_64")]:
+            for failure in [
+                "",
+                "os",
+                "arch",
+                "commit",
+                "event",
+                "tag",
+                "oid",
+                "version",
+            ]:
+                with (
+                    self.subTest(system=system, failure=failure),
+                    tempfile.TemporaryDirectory(prefix="gitbuddy-native-") as directory,
+                ):
+                    root = Path(directory)
+                    tools = root / "tools"
+                    tools.mkdir()
+                    for name, body in [
+                        ("git", GIT),
+                        (
+                            "uname",
+                            "#!/bin/bash\ncase $1 in\n"
+                            f"-s) echo {'wrong' if failure == 'os' else system};;\n"
+                            f"-m) echo {'wrong' if failure == 'arch' else arch};;\nesac\n",
+                        ),
+                    ]:
+                        tool = tools / name
+                        tool.write_text(body)
+                        tool.chmod(0o755)
+                    version = root / "internal/buildinfo/version.txt"
+                    version.parent.mkdir(parents=True)
+                    version.write_text("0.2.0" if failure == "version" else "0.1.0")
+                    result = subprocess.run(
+                        ["/bin/bash", "-c", NATIVE],
+                        cwd=root,
+                        env={
+                            **os.environ,
+                            "PATH": f"{tools}:/usr/bin:/bin",
+                            "RELEASE_TAG": "v0.1.0",
+                            "RELEASE_VERSION": "0.1.0",
+                            "GITHUB_SHA": "event-sha",
+                            "EXPECTED_COMMIT": f"{2 if failure == 'commit' else 1:040d}",
+                            "EXPECTED_TAG_OID": "wrong"
+                            if failure == "oid"
+                            else "annotated-tag-object",
+                            "EXPECTED_OS": system,
+                            "EXPECTED_ARCH": arch,
+                            "FIXTURE_FAILURE": failure,
+                        },
+                        capture_output=True,
+                        text=True,
+                        timeout=10,
+                    )
+                    self.assertEqual(result.returncode == 0, not failure, result.stderr)
+
+    def test_actual_assembly_step_uses_both_bundles_and_prepares_verified_notes(self):
+        from test_release import ASSETS, CHANGELOG, NOTES, write_bundle
+
+        with tempfile.TemporaryDirectory(
+            prefix="gitbuddy-workflow-assembly-"
+        ) as directory:
+            root = Path(directory)
+            (root / "scripts").mkdir()
+            for name in ["assemble-release.py", "check-release.py"]:
+                shutil.copyfile(
+                    WORKFLOW.parents[2] / "scripts" / name, root / "scripts" / name
+                )
+            version = root / "internal/buildinfo/version.txt"
+            version.parent.mkdir(parents=True)
+            version.write_text("0.1.0\n")
+            (root / "CHANGELOG.md").write_text(CHANGELOG)
+            (root / "artifacts").mkdir()
+            for target in ["darwin-arm64", "linux-amd64"]:
+                write_bundle(root / "artifacts" / target, target)
+            tools = root / "tools"
+            tools.mkdir()
+            (tools / "python3").symlink_to(sys.executable)
+            env = {
+                **os.environ,
+                "PATH": f"{tools}:/usr/bin:/bin",
+                "RELEASE_TAG": "v0.1.0",
+                "RUNNER_TEMP": str(root),
+            }
+            result = subprocess.run(
+                ["/bin/bash", "-c", ASSEMBLE],
+                cwd=root,
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=20,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(
+                sorted(p.name for p in (root / "release-bundle").iterdir()),
+                sorted(ASSETS),
+            )
+            self.assertEqual((root / "gitbuddy-release-notes.md").read_text(), NOTES)
+            # A rerun must not replace an existing (possibly partial) result.
+            result = subprocess.run(
+                ["/bin/bash", "-c", ASSEMBLE],
+                cwd=root,
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=20,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual((root / "gitbuddy-release-notes.md").read_text(), NOTES)
 
     def test_verification_shell_syntax_and_raw_tag_oid(self):
         script = VERIFY
@@ -274,7 +462,17 @@ class WorkflowTests(unittest.TestCase):
         )
         self.assertIn('tag_oid=$(git rev-parse "refs/tags/$RELEASE_TAG")', script)
         self.assertIn("internal/buildinfo/version.txt", script)
-        for body in [VALIDATE, script, DRAFT]:
+        for body in [
+            VALIDATE,
+            script,
+            NATIVE,
+            step_script("Require exact source Go toolchain"),
+            ASSEMBLE,
+            DRAFT,
+            step_script("Verify installer host", PAGES),
+            step_script("Verify installer", PAGES),
+            step_script("Package public installer", PAGES),
+        ]:
             result = subprocess.run(
                 ["/bin/bash", "-n"], input=body, text=True, capture_output=True
             )
@@ -311,7 +509,7 @@ class PagesWorkflowTests(unittest.TestCase):
             )
             self.assertIn("gitbuddy#install", (root / "_site/index.html").read_text())
 
-    def test_only_main_can_deploy_after_mac_installer_verification(self):
+    def test_only_main_can_deploy_after_both_native_installer_verifications(self):
         text = PAGES.read_text()
         build, deploy = text.split("\n  deploy:\n", 1)
         self.assertIn("branches: [main]", build)
@@ -320,7 +518,19 @@ class PagesWorkflowTests(unittest.TestCase):
         self.assertIn("permissions:\n  contents: read", build)
         self.assertNotIn("pages: write", build)
         self.assertNotIn("id-token: write", build)
-        self.assertIn("runs-on: macos-15", build)
+        verify, package = build.split("\n  package:\n", 1)
+        self.assertIn("runs-on: ${{ matrix.runner }}", verify)
+        self.assertEqual(
+            re.findall(r"- runner: (\S+)\n +os: (\S+)\n +arch: (\S+)", verify),
+            [("macos-15", "Darwin", "arm64"), ("ubuntu-24.04", "Linux", "x86_64")],
+        )
+        host = step_script("Verify installer host", PAGES)
+        self.assertIn('test "$(uname -s)" = "$EXPECTED_OS"', host)
+        self.assertIn('test "$(uname -m)" = "$EXPECTED_ARCH"', host)
+        self.assertIn("needs: verify", package)
+        self.assertNotIn("always()", text)
+        self.assertNotIn("continue-on-error", text)
+        self.assertEqual(build.count("ref: ${{ github.sha }}"), 2)
         self.assertIn("persist-credentials: false", build)
         self.assertIn("sh -n scripts/install.sh", build)
         self.assertIn("python3 scripts/test_install.py -v", build)

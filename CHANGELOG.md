@@ -20,13 +20,20 @@
   visible when footer notifications grow.
 - Include the streamed `sh` installer, terminal progress and safe cancellation
   already available through the public GitHub Pages installer endpoint.
+- Add Linux x86_64 (`linux/amd64`) alongside macOS arm64 as a candidate
+  distribution target, using the existing installer and in-app update flow.
+  Native Linux and hosted installation/update trials remain pending; this is
+  not a claim that Linux support has been released or tested.
 
 This candidate is intended for the first real installed-update and optional
 restart trial from `0.1.1`. Update discovery requires a published **stable**
 release; a draft or prerelease is not offered automatically.
 
-**Unsigned macOS arm64 build:** Git is required; no language runtime is needed.
-Do not disable Gatekeeper or remove quarantine to run it. Settings are retained,
+**Candidate targets:** macOS arm64 and Linux x86_64. Linux installation requires
+Bash at `/bin/bash`, `curl`, working Git and GNU `stat`, `sha256sum` and common
+utilities. The app needs no language runtime. Native Linux and hosted trials
+remain pending. **Unsigned macOS arm64 build:** do not disable Gatekeeper or
+remove quarantine to run it. Settings are retained,
 and updates and restart remain separate, explicitly chosen actions.
 
 ## [0.1.1] — prerelease candidate

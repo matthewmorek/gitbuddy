@@ -4,8 +4,8 @@ Gitbuddy uses **tag → verified draft → publish**. A deliberate `vX.Y.Z` tag 
 runs verification and creates a draft; a maintainer decides when to publish it.
 The first release additionally requires a public prerelease trial before stable
 promotion. The installer targets
-`matthewmorek/gitbuddy`, installs a native macOS arm64 binary, and updates it when
-rerun. Users need Git, not Go, Bun or Node. Branch pushes do not start releases,
+`matthewmorek/gitbuddy`, with candidate targets macOS arm64 and Linux x86_64.
+Users need Git, not Go, Python or Node for app installation. Branch pushes do not start releases,
 and the workflow never publishes a draft or updates installed copies.
 
 ## Public installer endpoint
@@ -19,15 +19,16 @@ second downloaded bootstrap script is needed.
 The small `sh` entrypoint follows the function-definitions-first, final-call
 pattern used by [rustup](https://github.com/rust-lang/rustup/blob/cdba254727319c07d6485f6fe10f3f4642e98885/rustup-init.sh)
 and [uv](https://docs.astral.sh/uv/reference/installer/).
-It hands the buffered implementation to macOS's built-in Bash, retaining the
+It hands the buffered implementation to Bash at `/bin/bash`, retaining the
 existing safe-replacement checks instead of rewriting them for another shell.
 Newline-delimited stages work in pipes and logs; a suitable terminal gets color.
 `NO_COLOR` or `TERM=dumb` disables color. No full-screen UI, background spinner,
 interactive prompt or shell-profile edit is involved.
 
-The **Publish installer** workflow verifies the installer on macOS and packages
-only `install.sh` and a small `index.html`. Pull requests can verify/package but
-cannot deploy. Only successful verification on this repository's **main** can
+For the Linux candidate, installer verification must pass on both macOS and
+Linux before packaging the unchanged `install.sh` and a small `index.html`.
+Pull requests can verify/package but cannot deploy. Only successful verification
+on this repository's **main** can
 deploy, with separate `pages: write` and `id-token: write` permissions in the
 `github-pages` environment. Branch pushes still never create application releases.
 
@@ -54,8 +55,11 @@ same host do not protect against compromised distribution.
   not establish Gatekeeper acceptance. Do not disable Gatekeeper,
   remove quarantine, or claim notarization to make the test pass. If macOS blocks
   the intended installation path, leave the release a prerelease and revisit signing.
-- Only macOS arm64 is supported. Intel and other platforms require their own
-  executed binary verification before adding assets or installer support.
+- The published `0.1.1` prerelease remains macOS arm64 only. The `0.1.2`
+  candidate adds Linux x86_64 (`linux/amd64`, `uname -m` `x86_64`), initially
+  targeting Ubuntu/GNU utilities. Native Linux and hosted trials are pending.
+  Do not claim universal musl, minimal-distribution or kernel compatibility.
+  Linux ARM, Intel Mac, Windows and package-manager installs are out of scope.
 - Gitbuddy's original code is MIT-licensed. Preserve the generated Go/module
   notices and OpenCode palette attribution. The Go distribution no longer embeds
   Bun/OpenTUI or their native LGPL dependencies; see [licensing](LICENSING.md).
@@ -69,18 +73,48 @@ downloaded macOS installation and immediate launch of `0.1.1`, with no blockers.
 That initial installation check does not establish the still-pending installed
 upgrade and optional restart path below.
 
-With Go 1.26.7 or newer, Git and Python 3:
+The candidate requires Go 1.26.7 or newer, Git and Python 3 for release work.
+Resolve dependencies read-only before offline native builds:
 
 ```sh
 go test ./...
+go test -race ./...
 go vet ./...
 python3 -m unittest discover -s scripts
+sh -n scripts/install.sh
 bash -n scripts/install.sh
 python3 scripts/smoke-terminal.py
-python3 scripts/build.py --release
-python3 scripts/smoke-terminal.py --binary dist/gitbuddy-0.1.2-darwin-arm64
-python3 scripts/check-release.py v0.1.2
+GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 go list -mod=readonly -deps ./cmd/gitbuddy
+GOOS=linux GOARCH=amd64 GOAMD64=v1 CGO_ENABLED=0 go list -mod=readonly -deps ./cmd/gitbuddy
 ```
+
+On each native runner, use the same source and exact Go toolchain:
+
+```sh
+python3 scripts/build.py --release
+# On macOS arm64:
+python3 scripts/check-release.py v0.1.2 dist --target darwin-arm64
+python3 scripts/smoke-terminal.py --binary dist/gitbuddy-0.1.2-darwin-arm64
+# On Linux x86_64, use these two commands instead:
+python3 scripts/check-release.py v0.1.2 dist --target linux-amd64
+python3 scripts/smoke-terminal.py --binary dist/gitbuddy-0.1.2-linux-amd64
+```
+
+The build uses `CGO_ENABLED=0`; Linux targets baseline amd64 (`GOAMD64=v1`)
+and a non-PIE binary. The target checker validates one native output. The full
+bundle checker defaults to requiring both targets, so it must not be run against
+a single host's `dist` directory. After both verified runs:
+
+```sh
+python3 scripts/assemble-release.py v0.1.2 --darwin-arm64 artifacts/darwin-arm64 --linux-amd64 artifacts/linux-amd64 --output release-bundle
+python3 scripts/check-release.py v0.1.2 release-bundle
+```
+
+Assembly requires fresh output, validates both native bundles and identical
+common files, and retains partial output on failure. The single notice file covers
+the union of both platforms' executable dependencies. The complete release has
+exactly five assets: the two platform binaries, `SHA256SUMS`,
+`THIRD_PARTY_NOTICES.txt` and `install.sh`.
 
 `check-release.py` is read-only: it checks the tag against `internal/buildinfo/version.txt`, requires a
 single nonempty matching changelog section, verifies exactly the expected checksum
@@ -110,20 +144,23 @@ download or Gatekeeper verification.
    updates. Never move or reuse a release tag. This document grants no Git authority.
    Push one release tag at a time, using a maintainer's normal Git credentials;
    pushes made with another workflow's `GITHUB_TOKEN` do not trigger this workflow.
-3. The read-only build job checks out the event's exact commit, requires the tag
-   to still resolve to it and the commit to belong to `origin/main` history,
-   checks source version/architecture, runs tests and source/binary
-   terminal checks, and archives four verified files:
-   `gitbuddy-0.1.2-darwin-arm64`, `SHA256SUMS`, `THIRD_PARTY_NOTICES.txt`, `install.sh`.
-   After verification, a second, write-authorized job automatically creates the
-   draft. It checks out the tested commit, revalidates transferred bytes, checks the tag
-   object has not changed, and refuses any existing release or draft for that tag.
-   It uploads the exact four files to a **new draft, not latest**. Version `0.1.0`
+3. The candidate release workflow requires read-only source validation and separate
+   native macOS arm64 and Ubuntu x86_64 build/verification jobs. Both use the
+   tag event's same commit and pinned Go toolchain. Source validation requires
+   the tag to resolve to that commit and the commit to belong to `origin/main`.
+   Both native jobs must pass before drafting; each contributes a same-run artifact.
+   The aggregate step revalidates both artifacts and assembles the complete
+   five-file bundle in fresh output:
+   `gitbuddy-0.1.2-darwin-arm64`, `gitbuddy-0.1.2-linux-amd64`, `SHA256SUMS`,
+   `THIRD_PARTY_NOTICES.txt`, and `install.sh`. The draft job revalidates the source
+   version and bundle, checks the tag OID has not changed, refuses any existing
+   release or draft, and uploads
+   only those five files to a **new draft, not latest**. Version `0.1.0`
    is also marked **prerelease**; subsequent versions are ordinary drafts.
    The `0.1.1` first-release trial was explicitly marked **prerelease** with title
    `0.1.1-beta` before publication, keeping it out of stable discovery.
    The workflow neither creates a tag nor publishes.
-   Only this job has `contents: write`;
+   Only the draft job has `contents: write`;
    it uses the workflow token, not a personal token or signing credentials.
 4. Inspect the run, draft, notes, tag SHA and assets. If creation/upload partially
    fails, preserve the draft and artifacts and inspect them manually. There is no
@@ -204,7 +241,9 @@ Versioned release installers remain unchanged; older Bash-only installers must
 be saved and run using Bash. Publishing the Pages script does not replace any
 release asset or change its checksum.
 
-Rerun to update. Default destination is `~/.local/bin/gitbuddy`; the installer makes
+Rerun to update. Default destination is `~/.local/bin/gitbuddy`; Linux needs
+Bash at `/bin/bash`, `curl`, working Git, GNU `stat`, `sha256sum` and common
+utilities. No Go, Python or Node is needed to install or run the app. The installer makes
 no sudo, profile, background-service or quarantine changes.
 An absolute `--install-dir` overrides it. Add the directory to PATH yourself if
 needed. The installer resolves one latest tag and pins all downloads to it, verifies
@@ -216,7 +255,7 @@ compromised release host.
 Release builds also support **Ctrl+P → Check for updates / Install update**.
 The app performs one nonblocking stable-release check after startup, but always
 requires confirmation to install. It verifies pinned downloads and replaces only
-a safe user-owned regular `gitbuddy` executable on macOS arm64, never a development
+a safe user-owned regular `gitbuddy` executable on macOS arm64 or Linux x86_64, never a development
 build or symlink. Unsafe/nonstandard installations receive manual guidance.
 Installation and Git mutations cannot overlap. Quit cancels downloads and waits
 for installation/Git settlement; **Restart** is a separate opt-in command after
@@ -224,12 +263,20 @@ installation, executed only after terminal restoration. No daemon or preference
 schema change is involved. `GITBUDDY_NO_UPDATE_CHECK=1` disables only the automatic
 check, not the manual command.
 
+Root/system and symlink installations do not self-update; preserve the installer's
+owner and permission checks. SHA-256 detects corruption, not compromised-host
+substitution. Older releases have no Linux assets; an explicit Linux rollback
+must target a Linux-capable version.
+
 The public-prerelease trial uses the pinned shell installer because application
 update discovery deliberately excludes prereleases. A later stable release is
 needed to validate live in-TUI upgrade/restart delivery from an older installation.
 Go tests cover updater networking, replacement safety and UI lifecycle with
 offline fixtures; those tests do not establish hosted delivery or Gatekeeper
 acceptance. Include both manual and startup discovery in that future live trial.
+For Linux, native and hosted installation trials remain pending. A prerelease can
+test the pinned Linux installer, but not stable-only in-app discovery. The hosted
+Linux update/restart trial requires two Linux-capable stable versions.
 
 `bash install-gitbuddy.sh --version X.Y.Z` explicitly pins a release, including a
 rollback; default latest never silently downgrades. Back up preferences/themes
@@ -243,7 +290,8 @@ its commit, tag and publication still need separate maintainer authorization.
 The release must be published as **stable/latest** for the installed `0.1.1`
 app to discover it. Keeping `0.1.2` a draft or prerelease will not test that path.
 
-1. Keep the working `0.1.1` installation and note its repository and settings.
+1. For the historical macOS trial, keep the working `0.1.1` installation and note
+   its repository and settings.
    After the new stable release is available, relaunch `0.1.1` and confirm the
    background notice appears without taking focus or installing anything.
    Check **Ctrl+P → Check for updates** before proceeding too.
@@ -257,6 +305,15 @@ Record the tested versions, platform and downloaded hashes. A local unit test
 or successful release workflow is not this installed-process trial. Preserve
 existing assets and report failures; do not automatically republish, downgrade
 or remove the installation.
+
+For Linux, first test a pinned installer on a native Ubuntu/GNU host once a
+Linux-capable candidate is hosted; this does not exercise in-app discovery.
+Complete the live Linux background/manual discovery, confirmed install and
+optional restart trial only after two Linux-capable stable versions exist.
+Keep the current installation usable through the update, allow terminal and Git
+work to settle before restart, and verify the same repository and preferences
+afterward. Record platform, versions and downloaded hashes. These Linux trials
+have not been performed.
 
 ## Subsequent versions
 
