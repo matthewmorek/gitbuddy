@@ -259,7 +259,7 @@ func TestDetailsUnusualNamesMetadataAndFirstParent(t *testing.T) {
 		t.Fatal("missing timestamps")
 	}
 	equal(t, d.Parents, []string{})
-	equal(t, d.Files, []ChangedFile{{Status: "A", Path: original}})
+	equal(t, d.Files, []ChangedFile{{Status: "A", Path: original, Added: 1}})
 	equal(t, d.Comparison, "Root commit: all files added")
 	mustOK(t, os.Rename(filepath.Join(path, original), filepath.Join(path, renamed)))
 	f.git(path, "add", "--all")
@@ -275,7 +275,7 @@ func TestDetailsUnusualNamesMetadataAndFirstParent(t *testing.T) {
 	f.git(path, "merge", "--no-ff", "side", "-m", "merge")
 	merge := detailsOf(t, r, f.git(path, "rev-parse", "HEAD"))
 	equal(t, merge.Parents, []string{renameSHA, side})
-	equal(t, merge.Files, []ChangedFile{{Status: "A", Path: "side-file"}})
+	equal(t, merge.Files, []ChangedFile{{Status: "A", Path: "side-file", Added: 1}})
 	equal(t, merge.Comparison, "Compared with first parent "+renameSHA)
 	commits, err := r.History(testContext, snapshotOf(t, r, All), 0, 200)
 	mustOK(t, err)

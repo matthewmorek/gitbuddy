@@ -320,3 +320,31 @@ func TestManualCheckWithoutNewerReleaseDoesNotOfferInstall(t *testing.T) {
 		t.Fatal("no-update result offered an installation")
 	}
 }
+
+func TestUpdateNoticesExpireButOngoingOperationsAndCommandsRemain(t *testing.T) {
+	m, _ := availableUpdate(t)
+	old := m.noticeID
+	m.Update(noticeExpiredMsg(old))
+	if strings.Contains(plain(m), "Gitbuddy 0.1.1 available") || m.updates.available.Version != "0.1.1" {
+		t.Fatal("available update expiry hid the command or retained the banner")
+	}
+	cmd := m.installUpdate()
+	m.width, m.height = 60, 15
+	if !strings.Contains(plain(m), "Installing Gitbuddy") {
+		t.Fatal("compact notification hint hid an ongoing installation")
+	}
+	m.Update(noticeExpiredMsg(old))
+	if !strings.Contains(plain(m), "Installing Gitbuddy") {
+		t.Fatal("old notification expiry hid an ongoing installation")
+	}
+	m.Update(updateResult(t, cmd))
+	newer := m.noticeID
+	m.Update(noticeExpiredMsg(old))
+	if !strings.Contains(plain(m), "installed") {
+		t.Fatal("old expiry cleared installation result")
+	}
+	m.Update(noticeExpiredMsg(newer))
+	if m.notice != "" || m.updates.installed == "" || m.updateActions()[2].disabled != "" {
+		t.Fatal("installed notice expiry lost restart state")
+	}
+}

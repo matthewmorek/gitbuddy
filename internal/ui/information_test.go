@@ -1,17 +1,20 @@
 package ui
 
 import (
+	"image/color"
 	"strings"
 	"testing"
 	"time"
 
+	"charm.land/lipgloss/v2"
+	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/matthewmorek/gitbuddy/internal/gitrepo"
 )
 
 // Match a colored token without depending on how much padding follows it.
 func coloredPrefix(text, fg, bg string) string {
-	return strings.TrimSuffix(line(text, ansi.StringWidth(text), fg, bg, false), "\x1b[0m")
+	return strings.TrimSuffix(strings.TrimSuffix(line(text, ansi.StringWidth(text), fg, bg, false), "\x1b[0m"), ansi.ResetStyle)
 }
 
 func TestRelativeCommitTimes(t *testing.T) {
@@ -148,8 +151,8 @@ func TestCommitRowsAlignMetadataAndHighlightHEAD(t *testing.T) {
 			t.Fatal("commit subject, yellow HEAD badge or right-aligned age missing")
 		}
 		sha := m.rows[0].SHA[:8]
-		if !strings.Contains(ansi.Strip(second), sha+"  [v0.1.2] [nightly]") ||
-			!strings.HasSuffix(ansi.Strip(second), "alice  ") ||
+		if !strings.Contains(ansi.Strip(second), sha+" • alice") ||
+			!strings.HasSuffix(ansi.Strip(second), "[v0.1.2] [nightly]  ") ||
 			!strings.Contains(second, coloredPrefix(sha, c.Muted, c.Selection)) ||
 			strings.Contains(ansi.Strip(second), "origin/main") {
 			t.Fatal("SHA/tags/author metadata layout is incorrect")
@@ -182,5 +185,218 @@ func TestRefreshHeaderKeepsSnapshotIdentity(t *testing.T) {
 	m.Update(m.refresh(gitrepo.Current)())
 	if header := ansi.Strip(m.header(m.colors())); !strings.Contains(header, "⎇ unborn | ↑— ↓—") {
 		t.Fatalf("header did not follow unborn snapshot: %q", header)
+	}
+}
+
+func TestNestedLabelsKeepEveryTerminalCellOnItsRowSurface(t *testing.T) {
+	m, _ := setup(t, 3)
+	for i := range m.rows {
+		m.rows[i].Labels = []string{"HEAD", "tag: v1"}
+		m.rows[i].Subject = "following text"
+	}
+	for _, mode := range []string{"dark", "light"} {
+		m.settings.Value.ColorMode = mode
+		c := m.colors()
+		screen := uv.NewStyledString(m.View().Content).Lines(ansi.GraphemeWidth)
+		// Check the composed view, not just a styled fragment: both rows of
+		// selected and unselected entries, including all following whitespace.
+		for i := 0; i < 3; i++ {
+			bg := m.paneBackground("history", c)
+			if i == 0 {
+				bg = c.Selection
+			}
+			want := color.RGBAModel.Convert(lipgloss.Color(bg))
+			for _, y := range []int{6 + 2*i, 7 + 2*i} {
+				for x := 2 * horizontalPadding; x < horizontalPadding+m.contentWidth()/2-horizontalPadding; x++ {
+					cell := screen[y][x]
+					if cell.Style.Bg == nil || color.RGBAModel.Convert(cell.Style.Bg) != want {
+						t.Fatalf("%s commit %d cell %d,%d (%q): lost row background", mode, i, x, y, cell.Content)
+					}
+				}
+			}
+		}
+		// Each button's leading/trailing spaces have the same surface as its
+		// label, even after the outer pane and base view are composed.
+		for x := 4; x < 18; x++ {
+			bg := c.Background
+			if x >= 9 {
+				bg = c.Selection
+			}
+			if actual := screen[4][x].Style.Bg; actual == nil || color.RGBAModel.Convert(actual) != color.RGBAModel.Convert(lipgloss.Color(bg)) {
+				t.Fatalf("%s scope button padding cell %d lost its background", mode, x)
+			}
+		}
+	}
+}
+
+func TestDetailsContentOrderStatisticsAndSafeWrapping(t *testing.T) {
+	m, _ := setup(t, 3)
+	m.now = time.Date(2026, 11, 14, 12, 0, 0, 0, time.UTC)
+	m.details = &gitrepo.Details{
+		SHA: strings.Repeat("a", 40), Message: "Unique subject\n\nBody paragraph\nnext line\n",
+		Author: "Git Author", AuthorEmail: "author@example.invalid", AuthoredAt: "2026-11-14T10:00:00Z",
+		Committer: "Committer", CommittedAt: "2026-11-14T11:00:00Z",
+		Comparison: "Compared with first parent parent-sha",
+		Files: []gitrepo.ChangedFile{
+			{Status: "M", Path: "file_path", Added: 118, Deleted: 6},
+			{Status: "A", Path: "added", Added: 103},
+			{Status: "D", Path: "deleted", Deleted: 38},
+			{Status: "R100", OldPath: "old\tname", Path: "new\nname\x1b[2J"},
+			{Status: "M", Path: "binary.dat", Binary: true},
+		},
+	}
+	lines := m.detailLines()
+	text := ansi.Strip(strings.Join(lines, "\n"))
+	if !strings.HasPrefix(text, "aaaaaaaa Unique subject\nGit Author") ||
+		!strings.HasSuffix(ansi.Strip(lines[1]), "2h ago") ||
+		strings.Count(text, "Unique subject") != 1 {
+		t.Fatal("details subject/author/age hierarchy is incorrect")
+	}
+	body, files, metadata := strings.Index(text, "Body paragraph"), strings.Index(text, "file_path"), strings.Index(text, "Author:")
+	if body < 0 || files < body || metadata < files ||
+		!strings.Contains(text, `old\tname → new↵name\x1b[2J`) ||
+		strings.Contains(text, "+0") || strings.Contains(text, "-0") {
+		t.Fatal("body, safe rename, file counts or metadata order regressed")
+	}
+	for name, counts := range map[string]string{"file_path": "+118 -6", "added": "+103", "deleted": "-38", "binary.dat": "binary"} {
+		found := false
+		for _, row := range lines {
+			if strings.Contains(ansi.Strip(row), name) && strings.HasSuffix(ansi.Strip(row), counts) {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("%s lacks right-aligned truthful counts %q", name, counts)
+		}
+	}
+	for _, mode := range []string{"dark", "light"} {
+		m.settings.Value.ColorMode = mode
+		c := m.colors()
+		rows := uv.NewStyledString(strings.Join(m.detailLines(), "\n")).Lines(ansi.GraphemeWidth)
+		for _, row := range rows {
+			content := row.String()
+			statusColors := map[string]string{
+				"M  ": m.semanticColor(c, "#fbbf24", "#a16207"),
+				"A  ": m.semanticColor(c, "#4ade80", "#15803d"),
+				"D  ": errorColor(c), "R100  ": c.Accent,
+			}
+			for prefix, statusColor := range statusColors {
+				if !strings.HasPrefix(content, prefix) {
+					continue
+				}
+				if actual := row[0].Style.Fg; actual == nil || color.RGBAModel.Convert(actual) != color.RGBAModel.Convert(lipgloss.Color(statusColor)) {
+					t.Fatalf("%s status lost semantic color", prefix)
+				}
+				for _, cell := range row {
+					want := ""
+					if cell.Content == "+" {
+						want = m.semanticColor(c, "#4ade80", "#15803d")
+					} else if cell.Content == "-" {
+						want = errorColor(c)
+					}
+					if want != "" && (cell.Style.Fg == nil || color.RGBAModel.Convert(cell.Style.Fg) != color.RGBAModel.Convert(lipgloss.Color(want))) {
+						t.Fatal("added/deleted count lost semantic color")
+					}
+				}
+			}
+		}
+	}
+	m.width = 30
+	m.details.Files = []gitrepo.ChangedFile{{Status: "A", Path: strings.Repeat("日本語/", 10) + "END", Added: 1}}
+	for _, row := range m.detailLines() {
+		if ansi.StringWidth(row) > m.paneWidth()-2*horizontalPadding || strings.Contains(row, "\x1b[2J") {
+			t.Fatal("details escaped their terminal-cell or sanitization boundary")
+		}
+	}
+	if !strings.Contains(ansi.Strip(strings.Join(m.detailLines(), "\n")), "END") {
+		t.Fatal("wrapped filename lost its end")
+	}
+}
+
+func TestHistoryHeaderKeepsScopeAndFetchStatusInSeparateCellBudgets(t *testing.T) {
+	m, _ := setup(t, 3)
+	m.lastFetch = time.Date(2026, 11, 14, 12, 34, 56, 0, time.UTC)
+	for _, width := range []int{120, 75, 40, 20, 10} {
+		m.width = width
+		paneWidth := m.contentWidth()
+		if width >= 100 {
+			paneWidth /= 2
+		}
+		inner := max(0, paneWidth-2*horizontalPadding)
+		header := m.historyHeader(inner, m.colors(), m.paneBackground("history", m.colors()))
+		if ansi.StringWidth(header) != inner {
+			t.Fatalf("width %d: scope/status overlap their row budget", width)
+		}
+		if inner >= 32 && !strings.HasSuffix(ansi.Strip(header), "Fetched 12:34:56") {
+			t.Fatal("fetch timestamp is not opposite-aligned")
+		}
+	}
+	m.width = 120
+	m.changeScope(gitrepo.All)
+	c := m.colors()
+	screen := uv.NewStyledString(m.View().Content).Lines(ansi.GraphemeWidth)
+	for x := 4; x < 18; x++ {
+		want := c.Background
+		if x < 9 {
+			want = c.Selection
+		}
+		if actual := screen[4][x].Style.Bg; actual == nil || color.RGBAModel.Convert(actual) != color.RGBAModel.Convert(lipgloss.Color(want)) {
+			t.Fatal("buttons do not highlight requested scope while loading")
+		}
+	}
+	m.width, m.focus, m.operation = 75, "details", "Fetching"
+	if !strings.Contains(plain(m), "Fetching") || !m.footerStatus() {
+		t.Fatal("details-only view hid the active Git operation")
+	}
+	m.quit()
+	if !strings.Contains(plain(m), "waiting to quit") {
+		t.Fatal("details-only view hid orderly shutdown")
+	}
+}
+
+func TestActiveStatusSurvivesNarrowHistoryHeader(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		width     int
+		operation string
+		loading   bool
+		closing   bool
+		want      string
+		footer    bool
+	}{
+		{"tiny fetch", 20, "Fetching", false, false, "Fetching", true},
+		{"tiny loading", 20, "", true, false, "Loading", true},
+		{"tiny closing", 20, "Fetching", false, true, "Quit pending", true},
+		{"fetch below boundary", 35, "Fetching", false, false, "Fetching", true},
+		{"fetch at boundary", 36, "Fetching", false, false, "Fetching", false},
+		{"closing below boundary", 53, "Fetching", false, true, "waiting to quit", true},
+		{"closing at boundary", 54, "Fetching", false, true, "waiting to quit", false},
+		{"normal single pane", 75, "Fetching", false, false, "Fetching", false},
+		{"normal split panes", 120, "Fetching", false, true, "waiting to quit", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m, _ := setup(t, 3)
+			m.width, m.focus = tc.width, "history"
+			m.operation, m.loading, m.closing = tc.operation, tc.loading, tc.closing
+			text := plain(m)
+			if !strings.Contains(text, tc.want) {
+				t.Fatalf("active status %q disappeared at width %d:\n%s", tc.want, tc.width, text)
+			}
+			if m.footerStatus() != tc.footer {
+				t.Fatal("status did not move to the footer only when the header needed it")
+			}
+			rows := strings.Split(text, "\n")
+			if len(rows) > m.height {
+				t.Fatal("status fallback overflowed the viewport height")
+			}
+			for _, row := range rows {
+				if ansi.StringWidth(row) > m.width {
+					t.Fatal("status fallback overflowed the viewport width")
+				}
+			}
+			if !tc.footer && (!strings.Contains(rows[4], tc.want) || strings.Count(text, tc.want) != 1) {
+				t.Fatal("normal-width status must appear only in the history header")
+			}
+		})
 	}
 }

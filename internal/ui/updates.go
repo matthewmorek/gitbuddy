@@ -50,7 +50,7 @@ func newAppUpdates(service UpdateService, automatic bool) appUpdates {
 }
 
 func (m *Model) startUpdateCheck() tea.Cmd {
-	if m.updates.service == nil || !m.updates.automatic {
+	if m.closing || m.updates.service == nil || !m.updates.automatic {
 		return nil
 	}
 	// Independent of repository reads: even a failed history load must not block
@@ -137,6 +137,7 @@ func (m *Model) updateMessage(msg tea.Msg) tea.Cmd {
 			if u.manual {
 				u.failure = fmt.Sprintf("Update check: %v", msg.err)
 				u.status = "Update check failed · Ctrl+P → Show errors and warnings"
+				m.notify(u.status+"\n"+u.failure, true)
 			}
 			return nil
 		}
@@ -151,6 +152,7 @@ func (m *Model) updateMessage(msg tea.Msg) tea.Cmd {
 		} else if u.manual {
 			u.status = "No newer stable release"
 		}
+		m.notify(u.status, false)
 	case updateInstallMsg:
 		if msg.request != u.request || !u.installing {
 			return nil
@@ -168,6 +170,7 @@ func (m *Model) updateMessage(msg tea.Msg) tea.Cmd {
 		if m.closing && m.operation == "" {
 			return tea.Quit
 		}
+		m.notify(u.status, u.failure != "")
 	}
 	return nil
 }

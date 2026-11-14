@@ -71,7 +71,11 @@ type Commit struct {
 	Relation                         CommitRelation
 }
 
-type ChangedFile struct{ Status, Path, OldPath string }
+type ChangedFile struct {
+	Status, Path, OldPath string
+	Added, Deleted        int
+	Binary                bool // Git reports "-" counts, not zero lines.
+}
 
 type Details struct {
 	SHA, Message, Author, AuthorEmail, AuthoredAt string

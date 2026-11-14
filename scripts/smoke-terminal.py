@@ -154,7 +154,7 @@ def exercise(root, repo, width, mode, executable, isolated):
         assert any(frame.encode() in output for frame in "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"), (
             "Loading spinner did not render"
         )
-        assert b"History" in output and b"Commit 1200" in output, (
+        assert b"current" in output and b"Commit 1200" in output, (
             "Initial history did not render"
         )
         send(b"\x10")  # Ctrl+P

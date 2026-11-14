@@ -313,7 +313,7 @@ func TestLayoutPaddingGapAndCompactPalette(t *testing.T) {
 			if !strings.HasPrefix(line, "  ") || !strings.HasSuffix(line, "  ") {
 				t.Fatal("edge padding")
 			}
-			if strings.Contains(line, "History") {
+			if strings.Contains(line, " all  current ") {
 				history = y
 			}
 			if strings.Contains(line, "commits loaded") || strings.Contains(line, "limit ") || strings.Contains(line, "Auto-fetch") {
@@ -338,27 +338,23 @@ func TestLayoutPaddingGapAndCompactPalette(t *testing.T) {
 				t.Fatal("adjacent pane insets must provide four empty columns")
 			}
 		}
-		details := strings.Index(lines[history], "Commit details")
-		if details < 0 || ansi.StringWidth(lines[history][:details]) != boundary+horizontalPadding {
-			t.Fatal("panes must meet without an additional gutter")
-		}
-		if !strings.HasPrefix(lines[history], "    History") {
+		if !strings.HasPrefix(lines[history], "     all  current ") {
 			t.Fatal("history pane horizontal inset")
 		}
 	}
 	m.width, m.height = 80, 15
 	m.selectCommit(m.rows[2].SHA)
-	m.updates.status = "No newer stable release"
+	m.notify("No newer stable release", false)
 	m.ensureVisible()
 	compact := plain(m)
 	if !strings.Contains(compact, "Commit 2") || !strings.Contains(compact, "No newer stable release") ||
-		!strings.Contains(compact, "Not fetched this session") || !strings.Contains(compact, "Ctrl+P") {
+		!strings.Contains(compact, "Not fetched") || !strings.Contains(compact, "Ctrl+P") {
 		t.Fatalf("compact update notice hid history or Git status: %s", compact)
 	}
 	if len(strings.Split(compact, "\n")) != 15 {
 		t.Fatal("compact footer exceeded terminal height")
 	}
-	m.updates.status = ""
+	m.notice = ""
 	m.width = 60
 	m.height = 18
 	m.openDialog("commands", "")
@@ -526,17 +522,22 @@ func TestDetailsRemainReachableAfterInsetAndViewportChanges(t *testing.T) {
 	}})
 	m.rows = m.rows[:2] // Keep the selected details outside the loaded view.
 	press(m, tea.KeyTab, "")
+	found := false
 	for range 100 {
+		found = found || strings.Contains(plain(m), "END-OF-DETAILS")
 		press(m, tea.KeyPgDown, "")
 	}
-	if !strings.Contains(plain(m), "END-OF-DETAILS") {
+	if !found {
 		t.Fatal("pane insets or retained-selection notice made the last details unreachable")
 	}
 	m.Update(tea.WindowSizeMsg{Width: 75, Height: 18})
+	m.detailsTop = 0
+	found = false
 	for range 100 {
+		found = found || strings.Contains(plain(m), "END-OF-DETAILS")
 		press(m, tea.KeyPgDown, "")
 	}
-	if !strings.Contains(plain(m), "END-OF-DETAILS") || m.detailsTop > m.maxDetailsTop() {
+	if !found || m.detailsTop > m.maxDetailsTop() {
 		t.Fatal("narrow reflow lost the last wrapped details")
 	}
 }
@@ -549,5 +550,210 @@ func TestViewportClampsAfterShorterHistory(t *testing.T) {
 	m.Update(m.refresh(gitrepo.Current)())
 	if m.top != 0 || !strings.Contains(plain(m), "Commit 0") {
 		t.Fatal("shorter list rendered blank")
+	}
+}
+
+// History is the first command in refresh batches; do not execute recurring
+// spinner, startup or notification timers in these event-loop regressions.
+func historyResult(t *testing.T, cmd tea.Cmd) historyMsg {
+	t.Helper()
+	if cmd == nil {
+		t.Fatal("missing history command")
+	}
+	msg := cmd()
+	if batch, ok := msg.(tea.BatchMsg); ok {
+		return historyResult(t, batch[0])
+	}
+	history, ok := msg.(historyMsg)
+	if !ok {
+		t.Fatalf("expected history, got %T", msg)
+	}
+	return history
+}
+
+func TestFetchRefreshResetsSelectionAndViewportOnlyForItsCurrentRead(t *testing.T) {
+	for _, automatic := range []bool{false, true} {
+		m, _ := setup(t, 100)
+		m.started = true
+		m.move(80)
+		if automatic {
+			m.settings.Value.AutoFetch = true
+			m.schedule()
+			m.Update(autoMsg(m.timer))
+		} else {
+			m.execute(action{id: "fetch"})
+		}
+		if m.operation != "Fetching" {
+			t.Fatal("fetch did not start")
+		}
+		_, cmd := m.Update(mutationMsg{fetch: true})
+		m.Update(historyResult(t, cmd))
+		m.ensureVisible()
+		if m.top != 0 || m.selected != m.rows[0].SHA {
+			t.Fatal("fetch refresh bounced back to the old selection")
+		}
+		m.move(80)
+		oldTop, selected := m.top, m.selected
+		m.Update(m.refresh(m.scope)())
+		if m.top != oldTop || m.selected != selected {
+			t.Fatal("ordinary local refresh stopped anchoring")
+		}
+		_, cmd = m.Update(mutationMsg{fetch: true})
+		result := historyResult(t, cmd)
+		m.move(-1) // A newer navigation decision wins over the pending fetch read.
+		selected = m.selected
+		m.Update(result)
+		if m.selected != selected || m.top == 0 {
+			t.Fatal("late fetch history overrode navigation")
+		}
+		_, cmd = m.Update(mutationMsg{fetch: true})
+		stale := historyResult(t, cmd)
+		m.Update(m.refresh(gitrepo.All)())
+		m.Update(stale)
+		if m.scope != gitrepo.All || m.selected != selected {
+			t.Fatal("retired fetch history crossed a newer scope generation")
+		}
+	}
+}
+
+func TestFetchRefreshFailureEmptyAndClosing(t *testing.T) {
+	m, repo := setup(t, 30)
+	m.move(20)
+	selected := m.selected
+	_, cmd := m.Update(mutationMsg{fetch: true, err: errors.New("fetch failed")})
+	result := historyResult(t, cmd)
+	result.err = errors.New("history failed")
+	m.Update(result)
+	if m.selected != selected || !m.lastFetch.IsZero() || !m.fetchFailed {
+		t.Fatal("failed refresh replaced selection or advanced successful fetch time")
+	}
+	_, cmd = m.Update(mutationMsg{fetch: true})
+	repo.rows = nil
+	m.Update(historyResult(t, cmd))
+	if m.selected != "" || m.details != nil || m.detailsLoading || m.top != 0 {
+		t.Fatal("empty fetched history retained stale selection/details")
+	}
+	m.operation = "Fetching"
+	m.quit()
+	generation := m.generation
+	_, cmd = m.Update(mutationMsg{fetch: true})
+	if cmd == nil || cmd() != tea.Quit() || m.generation != generation || m.Init() != nil {
+		t.Fatal("fetch completion started new work while closing")
+	}
+}
+
+func TestNotificationExpiryRetainsDiagnosticsAndRejectsOlderTimers(t *testing.T) {
+	m, _ := setup(t, 3)
+	m.Update(detailsMsg{request: m.detailRequest, err: errors.New("repeated failure")})
+	first := m.noticeID
+	if m.notice == "" || m.noticePending {
+		t.Fatal("error did not schedule expiry")
+	}
+	// The same message is a new event and gets a fresh five-second lifetime.
+	_, timer := m.Update(detailsMsg{request: m.detailRequest, err: errors.New("repeated failure")})
+	if timer == nil || m.noticeID == first {
+		t.Fatal("repeated notification reused its old timer")
+	}
+	m.Update(noticeExpiredMsg(first))
+	if m.notice == "" {
+		t.Fatal("older timer cleared a newer notification")
+	}
+	m.operation = "Fetching"
+	m.Update(noticeExpiredMsg(m.noticeID))
+	if m.notice != "" || !strings.Contains(m.warnings(), "repeated failure") ||
+		!strings.Contains(plain(m), "Fetching") || strings.Contains(plain(m), "repeated failure") {
+		t.Fatal("expiry hid ongoing work, retained the banner, or lost diagnostics")
+	}
+	m.openDialog("errors", "")
+	if !strings.Contains(plain(m), "repeated failure") {
+		t.Fatal("expired diagnostics cannot be reopened")
+	}
+	m.quit()
+	if _, cmd := m.Update(noticeExpiredMsg(first)); cmd != nil || m.noticeTimer() != nil {
+		t.Fatal("retired notification timer restarted during quit")
+	}
+}
+
+func TestStartupAndRepositoryWarningsExpireWithoutLosingTheirSource(t *testing.T) {
+	m, repo := setup(t, 3)
+	m.settings.Warning = "startup settings warning"
+	m.themes.Warnings = []string{"startup theme warning"}
+	fresh := New(m.ctx, repo, m.settings, m.themes, nil, false)
+	if fresh.noticeTimer() == nil || !strings.Contains(fresh.notice, "startup settings warning") ||
+		!strings.Contains(fresh.notice, "startup theme warning") {
+		t.Fatal("startup warnings lack notification lifetime")
+	}
+	fresh.Update(noticeExpiredMsg(fresh.noticeID))
+	if fresh.notice != "" || !strings.Contains(fresh.warnings(), "startup theme warning") {
+		t.Fatal("startup warning expiry destroyed diagnostics")
+	}
+	repo.status.FetchWarnings = []string{"restricted mapping"}
+	fresh.Update(fresh.refresh(gitrepo.Current)())
+	if fresh.notice != "restricted mapping" {
+		t.Fatal("new repository warning was not notified")
+	}
+	fresh.Update(noticeExpiredMsg(fresh.noticeID))
+	fresh.Update(fresh.refresh(gitrepo.Current)())
+	if fresh.notice != "" || !strings.Contains(fresh.warnings(), "restricted mapping") {
+		t.Fatal("unchanged warning reappeared on refresh or was discarded")
+	}
+}
+
+func TestScopeMouseHitboxesAndPendingScope(t *testing.T) {
+	for _, width := range []int{120, 75, 20} {
+		for _, x := range []int{4, 5, 7, 8} { // Both padding cells and label of " all ".
+			m, _ := setup(t, 3)
+			m.width = width
+			if m.View().MouseMode != tea.MouseModeCellMotion {
+				t.Fatal("v2 view does not enable mouse reporting")
+			}
+			_, cmd := m.Update(tea.MouseClickMsg{X: x, Y: 4, Button: tea.MouseLeft})
+			if cmd == nil || !m.loading || m.requestedScope != gitrepo.All {
+				t.Fatalf("width %d: all segment cell %d is not clickable", width, x)
+			}
+			all := historyResult(t, cmd)
+			gen := m.generation
+			if _, duplicate := m.Update(tea.MouseClickMsg{X: x, Y: 4, Button: tea.MouseLeft}); duplicate != nil || gen != m.generation {
+				t.Fatal("clicking the loading scope issued duplicate work")
+			}
+			_, cmd = m.Update(tea.MouseClickMsg{X: 9, Y: 4, Button: tea.MouseLeft})
+			current := historyResult(t, cmd)
+			m.Update(current)
+			m.Update(all)
+			if m.scope != gitrepo.Current || m.loading {
+				t.Fatal("stale scope result replaced the most recent button choice")
+			}
+		}
+	}
+	for _, x := range []int{9, 10, 16, 17} {
+		m, _ := setup(t, 3)
+		m.scope = gitrepo.All
+		if _, cmd := m.Update(tea.MouseClickMsg{X: x, Y: 4, Button: tea.MouseLeft}); cmd == nil || m.requestedScope != gitrepo.Current {
+			t.Fatal("current segment label/padding is not clickable")
+		}
+	}
+	for _, invalid := range []tea.MouseClickMsg{
+		{X: 3, Y: 4, Button: tea.MouseLeft}, {X: 18, Y: 4, Button: tea.MouseLeft},
+		{X: 4, Y: 3, Button: tea.MouseLeft}, {X: 4, Y: 5, Button: tea.MouseLeft},
+		{X: 4, Y: 4, Button: tea.MouseRight},
+	} {
+		m, _ := setup(t, 3)
+		if _, cmd := m.Update(invalid); cmd != nil || m.loading {
+			t.Fatal("out-of-bounds or non-left click switched scope")
+		}
+	}
+	for _, state := range []string{"modal", "hidden", "closing"} {
+		m, _ := setup(t, 3)
+		switch state {
+		case "modal":
+			m.openDialog("commands", "")
+		case "hidden":
+			m.width, m.focus = 75, "details"
+		case "closing":
+			m.quit()
+		}
+		if _, cmd := m.Update(tea.MouseClickMsg{X: 4, Y: 4, Button: tea.MouseLeft}); cmd != nil || m.loading {
+			t.Fatalf("%s click leaked to hidden controls", state)
+		}
 	}
 }

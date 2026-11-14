@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.2.0] — release candidate
+
+- Add a clickable all/current branch switch with fetch status in the history header.
+- Simplify commit details with highlighted hashes, author/time, and colored file
+  changes with line counts.
+- Reset history to the newest commit after fetching and dismiss notifications
+  after five seconds.
+- Fix HEAD/tag row backgrounds and place author metadata beside commit hashes.
+
+macOS arm64 and Linux x86_64. The macOS build is unsigned and not notarized;
+existing settings are preserved.
+
 ## [0.1.2] — patch candidate
 
 - Split the header into `Gitbuddy / repository` and a right-aligned branch with

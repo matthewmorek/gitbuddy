@@ -2,7 +2,7 @@
 
 Gitbuddy opens one Git repository per process. For installation, basic shortcuts
 and contributions, start with the [README](../README.md).
-This guide describes the `0.1.2` candidate; the released `0.1.1` still opens
+This guide describes the `0.2.0` candidate; the released `0.1.1` still opens
 all-branch history by default.
 
 ## Header and commit rows
@@ -19,8 +19,8 @@ Each commit uses two rows:
 - **Title and relative time:** a yellow `[HEAD]` prefix marks the current HEAD;
   the author timestamp appears at the right as `5 mins ago`, `2h ago`,
   `3 days ago` or `last week`.
-- **SHA/tags and author:** the muted short SHA and any commit tags appear at the
-  left, with the Git author name aligned at the right. Git does not reliably
+- **SHA and author:** the muted short SHA is followed immediately by ` • ` and
+  the Git author name, with tags at the right. Git does not reliably
   store a service username, so Gitbuddy does not guess one or perform a lookup.
 
 One minute clock redraws relative times without fetching, refreshing Git,
@@ -34,9 +34,18 @@ History defaults to the **current branch and its configured upstream**, includin
 fetched commits not yet merged locally (HEAD only when detached or without an
 available upstream). Use **Ctrl+P → All branches** to include other local branches,
 remote-tracking branches, tags and HEAD, excluding stash/reflog entries.
-Details show the selected commit's full message,
-metadata, parents and changed filenames. Merge files are compared with the **first parent**; root
-commits list added files. There is no branch graph or full patch viewer.
+The padded **all / current** buttons above the list also switch scope with a
+left click; the palette remains the keyboard route. The requested scope is
+highlighted while it loads. Fetch activity and the last successful fetch time
+appear at the opposite end of this list header.
+
+Details start with the short SHA and subject, then the Git author and relative
+age, message body and changed files. File statuses and added/deleted line counts
+use semantic colors; zero counts are omitted and binary changes say `binary`
+rather than implying zero changed lines. Renames retain both paths. Full commit
+metadata, absolute dates, parents and the comparison follow the files. Merge
+files are compared with the **first parent**; root commits list added files.
+There is no branch graph or full patch viewer.
 
 Incoming commits—reachable from the current branch's upstream but not from
 HEAD—use dimmed text. If both sides contain commits absent from the other,
@@ -49,11 +58,16 @@ error instead of allocating an unbounded membership list or displaying a partial
 classification. This metadata limit is separate from the loaded-history cap.
 
 Below 100 terminal columns, history and details share one pane. Selection is
-retained across refreshes, including when a selected commit leaves the loaded
-history. Navigate again to select a visible commit.
+retained across local refreshes, including when a selected commit leaves the
+loaded history. Navigate again to select a visible commit. After a fetch finishes,
+its refreshed history selects the first commit and scrolls to the top; navigation
+or a newer refresh requested while that read is pending takes precedence.
 **Tab** moves focus and its pane highlight. Errors and warnings wrap beside a
 continuous red rule; long footer diagnostics remain available in the scrollable
-**Ctrl+P → Show errors and warnings** dialog.
+**Ctrl+P → Show errors and warnings** dialog. Notifications disappear after five
+seconds; a new notification gets its own lifetime. Expiry does not clear saved
+diagnostics or hide an ongoing operation. Update actions remain in the palette
+after their notices disappear.
 
 **Maximum commits** defaults to **100** and caps the total loaded history, not
 each page. Change it through Ctrl+P → Maximum commits. Changes apply immediately,
@@ -62,17 +76,18 @@ Larger limits load in pages of up to 200 commits, using frozen commit tips so a
 fetch cannot shift subsequent pages.
 
 Selecting a commit reads its details locally; it does not fetch from remotes or
-replace the footer's operation status. Only detail reads lasting over 150 ms
-show a spinner in the details pane. The footer retains operation/fetch status
-and actionable errors.
+replace the Git operation status. Only detail reads lasting over 150 ms
+show a spinner in the details pane. On a narrow terminal showing only details,
+ongoing Git operations and a pending quit remain visible in the footer.
 
 ## Fetch and pull safety
 
 Automatic fetching defaults to **every five minutes while Gitbuddy is open**,
 with an initial fetch after local history renders. Disable it or change the
-interval in **Ctrl+P → Settings**. Fetch failures remain visible; use **Show
-errors and warnings** for the complete message. The last successful fetch time
-does not advance on failure. Manual refresh reads local state without fetching.
+interval in **Ctrl+P → Settings**. Fetch failures show a temporary notification;
+use **Show errors and warnings** for the complete saved message. The last
+successful fetch time does not advance on failure. Manual refresh reads local
+state without fetching.
 
 Fetch uses the repository's existing remotes and branch mappings. `--all` means
 eligible remotes—not necessarily all branches in a single-branch clone.

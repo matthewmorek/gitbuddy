@@ -40,6 +40,7 @@ type slowDetailsMsg int
 type autoMsg int
 type readyMsg int
 type minuteMsg time.Time
+type noticeExpiredMsg int
 type mutationMsg struct {
 	fetch bool
 	err   error
@@ -64,6 +65,10 @@ type Model struct {
 	details                                               *gitrepo.Details
 	top, detailsTop                                       int
 	generation, detailRequest, navigation, timer          int
+	fetchResetGeneration, fetchResetNavigation            int
+	noticeID                                              int
+	notice                                                string
+	noticeWarning, noticePending                          bool
 	loading, paging, hasMore, detailsLoading, slowDetails bool
 	started, closing                                      bool
 	operation, failure                                    string
@@ -82,11 +87,34 @@ func New(ctx context.Context, repo gitrepo.Repo, settings *preferences.Store, th
 	input.Prompt = ""
 	input.Placeholder = "Search commands"
 	input.SetVirtualCursor(true)
-	return &Model{ctx: ctx, repo: repo, settings: settings, themes: themes, width: 80, height: 24, dark: true, focus: "history", scope: gitrepo.Current, input: input, spinner: spinner.New(spinner.WithSpinner(spinner.MiniDot)), updates: newAppUpdates(updates, automaticUpdates), now: time.Now()}
+	m := &Model{ctx: ctx, repo: repo, settings: settings, themes: themes, width: 80, height: 24, dark: true, focus: "history", scope: gitrepo.Current, input: input, spinner: spinner.New(spinner.WithSpinner(spinner.MiniDot)), updates: newAppUpdates(updates, automaticUpdates), now: time.Now()}
+	m.notify(m.warnings(), true)
+	return m
 }
 
 func (m *Model) Init() tea.Cmd {
-	return tea.Batch(m.refresh(m.scope), tea.RequestBackgroundColor, m.spinner.Tick, m.startUpdateCheck(), m.minuteTick())
+	if m.closing {
+		return nil
+	}
+	return tea.Batch(m.refresh(m.scope), tea.RequestBackgroundColor, m.spinner.Tick, m.startUpdateCheck(), m.minuteTick(), m.noticeTimer())
+}
+
+func (m *Model) notify(text string, warning bool) {
+	if text == "" || m.closing {
+		return
+	}
+	m.noticeID++
+	m.notice, m.noticeWarning, m.noticePending = text, warning, true
+	m.ensureVisible()
+}
+
+func (m *Model) noticeTimer() tea.Cmd {
+	if !m.noticePending || m.closing {
+		return nil
+	}
+	m.noticePending = false
+	token := m.noticeID
+	return tea.Tick(5*time.Second, func(time.Time) tea.Msg { return noticeExpiredMsg(token) })
 }
 
 // One clock drives all relative labels; it never refreshes Git or changes focus.
@@ -217,6 +245,8 @@ func (m *Model) mutate(mode string) tea.Cmd {
 func (m *Model) quit() tea.Cmd {
 	m.closing = true
 	m.timer++
+	m.noticeID++
+	m.noticePending = false
 	if m.updates.cancel != nil {
 		m.updates.cancel()
 	}
@@ -228,12 +258,25 @@ func (m *Model) quit() tea.Cmd {
 func (m *Model) fail(err error) {
 	if err != nil {
 		m.failure = err.Error()
-		m.ensureVisible()
+		m.notify(m.failure, true)
 	}
 }
 
-func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+func (m *Model) Update(msg tea.Msg) (model tea.Model, command tea.Cmd) {
+	// All notification producers share one tokenized expiry, including messages
+	// repeated verbatim. Expiry hides presentation, never the diagnostic source.
+	defer func() {
+		if timer := m.noticeTimer(); timer != nil {
+			command = tea.Batch(command, timer)
+		}
+	}()
 	switch msg := msg.(type) {
+	case noticeExpiredMsg:
+		if !m.closing && int(msg) == m.noticeID {
+			m.notice = ""
+			m.ensureVisible()
+		}
+		return m, nil
 	case minuteMsg:
 		if m.closing {
 			return m, nil
@@ -267,7 +310,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.top < len(m.rows) {
 			anchor = m.rows[m.top].SHA
 		}
+		oldWarnings := strings.Join(m.status.FetchWarnings, "\n")
 		m.status = msg.status
+		if warnings := strings.Join(m.status.FetchWarnings, "\n"); warnings != oldWarnings {
+			m.notify(warnings, true)
+		}
 		m.snapshot = msg.snapshot
 		m.scope = msg.scope
 		m.rows = msg.rows[:min(msg.count, len(msg.rows))]
@@ -280,7 +327,18 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.top = min(m.top, max(0, len(m.rows)-m.visibleRows()))
 		var detail tea.Cmd
-		if m.selected == "" && len(m.rows) > 0 {
+		reset := m.fetchResetGeneration == msg.generation && m.fetchResetNavigation == m.navigation
+		m.fetchResetGeneration = 0
+		if reset {
+			m.top = 0
+			if len(m.rows) == 0 {
+				m.selected, m.details = "", nil
+				m.detailRequest++ // Retire a detail read from the previous list.
+				m.detailsLoading, m.slowDetails = false, false
+				m.detailsTop = 0
+			}
+		}
+		if (reset || m.selected == "") && len(m.rows) > 0 {
 			detail = m.selectCommit(m.rows[0].SHA)
 		}
 		m.ensureVisible()
@@ -355,7 +413,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, tea.Quit
 		}
-		return m, tea.Batch(m.refresh(m.scope), m.spinner.Tick)
+		refresh := m.refresh(m.activeScope())
+		if msg.fetch {
+			m.fetchResetGeneration, m.fetchResetNavigation = m.generation, m.navigation
+		}
+		return m, tea.Batch(refresh, m.spinner.Tick)
 	case spinner.TickMsg:
 		if m.activity() == "" && !m.slowDetails && !m.updateBusy() {
 			return m, nil
@@ -389,7 +451,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "q":
 			return m, m.quit()
 		case "r":
-			return m, tea.Batch(m.refresh(m.scope), m.spinner.Tick)
+			return m, tea.Batch(m.refresh(m.activeScope()), m.spinner.Tick)
 		case "tab", "shift+tab":
 			if m.focus == "history" {
 				m.focus = "details"
@@ -414,6 +476,16 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.detailsTop = max(0, min(m.maxDetailsTop(), m.detailsTop+delta))
 			} else {
 				return m, m.move(delta)
+			}
+		}
+		return m, nil
+	case tea.MouseClickMsg:
+		if m.closing || m.dialog != "" || msg.Button != tea.MouseLeft || !m.historyVisible() || m.paneHeight() < 2 {
+			return m, nil
+		}
+		for _, segment := range m.scopeSegments() {
+			if msg.Y == 4 && msg.X >= 2*horizontalPadding+segment.start && msg.X < 2*horizontalPadding+segment.end {
+				return m, m.changeScope(segment.scope)
 			}
 		}
 		return m, nil
@@ -509,8 +581,7 @@ func (m *Model) dialogKey(msg tea.KeyPressMsg) tea.Cmd {
 			next := m.settings.Value
 			n, err := strconv.Atoi(m.input.Value())
 			if err != nil {
-				m.failure = "Enter a positive whole number."
-				m.ensureVisible()
+				m.fail(fmt.Errorf("Enter a positive whole number."))
 				return nil
 			}
 			if m.dialog == "max" {
@@ -532,7 +603,7 @@ func (m *Model) dialogKey(msg tea.KeyPressMsg) tea.Cmd {
 		option := options[min(m.choice, len(options)-1)]
 		if option.disabled != "" {
 			m.failure = option.disabled
-			m.ensureVisible()
+			m.notify(m.failure, true)
 			return nil
 		}
 		m.closeDialog()
@@ -649,9 +720,9 @@ func (m *Model) execute(a action) tea.Cmd {
 	case "fetch", "ff-only", "merge", "rebase":
 		return m.mutate(a.id)
 	case "refresh":
-		return tea.Batch(m.refresh(m.scope), m.spinner.Tick)
+		return tea.Batch(m.refresh(m.activeScope()), m.spinner.Tick)
 	case "all", "current":
-		return tea.Batch(m.refresh(gitrepo.Scope(a.id)), m.spinner.Tick)
+		return m.changeScope(gitrepo.Scope(a.id))
 	case "settings", "themes", "modes", "errors":
 		return m.openDialog(a.id, "")
 	case "max":
@@ -672,6 +743,9 @@ func (m *Model) execute(a action) tea.Cmd {
 		return m.save(next)
 	case "clear":
 		m.failure = ""
+		m.notice = ""
+		m.noticeID++
+		m.noticePending = false
 		if m.updates.failure != "" {
 			m.updates.failure = ""
 			m.updates.status = ""
@@ -681,4 +755,21 @@ func (m *Model) execute(a action) tea.Cmd {
 		return m.quit()
 	}
 	return nil
+}
+
+func (m *Model) changeScope(scope gitrepo.Scope) tea.Cmd {
+	if m.closing {
+		return nil
+	}
+	if scope == m.activeScope() {
+		return nil
+	}
+	return tea.Batch(m.refresh(scope), m.spinner.Tick)
+}
+
+func (m *Model) activeScope() gitrepo.Scope {
+	if m.loading {
+		return m.requestedScope
+	}
+	return m.scope
 }

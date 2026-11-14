@@ -302,3 +302,62 @@ func TestCommitRelationsRejectPartialOrInvalidMetadata(t *testing.T) {
 		})
 	}
 }
+
+func TestDetailsNumstatMatchesRawPathsAndFrozenComparison(t *testing.T) {
+	f := newFixture(t)
+	path := f.repo("stats", false)
+	old, renamed := "old\tname\n.txt", "new\tname\n.txt"
+	f.commit(path, old, strings.Repeat("unchanged\n", 20), "root")
+	f.write(path, "modified\t\nfile", "before\nremoved\n")
+	f.write(path, "deleted", "one\ntwo\nthree\n")
+	f.write(path, "binary", "\x00before")
+	f.git(path, "add", "--all")
+	f.git(path, "commit", "-m", "base")
+	mustOK(t, os.Rename(filepath.Join(path, old), filepath.Join(path, renamed)))
+	f.write(path, renamed, strings.Repeat("unchanged\n", 20)+"extra\n")
+	f.write(path, "modified\t\nfile", "after\n")
+	mustOK(t, os.Remove(filepath.Join(path, "deleted")))
+	f.write(path, "added\t\nfile", "new content\nentirely different\n")
+	f.write(path, "binary", "\x00after")
+	f.git(path, "add", "--all")
+	f.git(path, "commit", "-m", "statistics")
+	sha := f.git(path, "rev-parse", "HEAD")
+	// A later commit and configured diff helpers must not affect these counts.
+	f.commit(path, renamed, "later content\n", "later")
+	f.git(path, "config", "diff.external", "/does/not/exist")
+	f.git(path, "config", "diff.hostile.textconv", "/does/not/exist")
+	f.write(path, ".gitattributes", "* diff=hostile\nbinary -diff\n")
+	d := detailsOf(t, openRepo(t, path), sha)
+	got := map[string]ChangedFile{}
+	for _, file := range d.Files {
+		got[file.Path] = file
+	}
+	if len(got) != 5 {
+		t.Fatalf("unexpected changed files: %#v", got)
+	}
+	equal(t, got["added\t\nfile"], ChangedFile{Status: "A", Path: "added\t\nfile", Added: 2})
+	equal(t, got["modified\t\nfile"], ChangedFile{Status: "M", Path: "modified\t\nfile", Added: 1, Deleted: 2})
+	equal(t, got["deleted"], ChangedFile{Status: "D", Path: "deleted", Deleted: 3})
+	equal(t, got["binary"], ChangedFile{Status: "M", Path: "binary", Binary: true})
+	rename := got[renamed]
+	equal(t, strings.HasPrefix(rename.Status, "R"), true)
+	equal(t, rename.OldPath, old)
+	equal(t, rename.Added, 1)
+	equal(t, rename.Deleted, 0)
+}
+
+func TestNumstatRejectsIncompleteOrAmbiguousRecords(t *testing.T) {
+	for _, output := range []string{
+		"1\t2\tfile", "1\t2\x00", "1\t2\t\x00old\x00",
+		"1\t-\tfile\x00", "-1\t0\tfile\x00", "x\t0\tfile\x00",
+		"1\t2\tfile\x001\t2\tfile\x00",
+	} {
+		if _, err := parseNumstat(output); err == nil {
+			t.Fatalf("accepted malformed numstat %q", output)
+		}
+	}
+	stats, err := parseNumstat("0\t0\t\x00old\t\npath\x00new\t\npath\x00-\t-\tbin\x00")
+	mustOK(t, err)
+	equal(t, stats[filePaths{"old\t\npath", "new\t\npath"}], ChangedFile{})
+	equal(t, stats[filePaths{path: "bin"}].Binary, true)
+}

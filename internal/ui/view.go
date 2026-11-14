@@ -18,8 +18,20 @@ const horizontalPadding = 2
 
 func line(text string, width int, fg, bg string, bold bool) string {
 	width = max(0, width)
+	if width == 0 {
+		return ""
+	}
 	text = ansi.Truncate(text, width, "…")
-	return lipgloss.NewStyle().Foreground(lipgloss.Color(fg)).Background(lipgloss.Color(bg)).Bold(bold).Width(width).MaxWidth(width).Render(text)
+	style := ansi.NewStyle().ForegroundColor(lipgloss.Color(fg)).BackgroundColor(lipgloss.Color(bg))
+	if bold {
+		style = style.Bold()
+	}
+	// Lipgloss v2 passes nested SGR resets through. Restore this row's style
+	// after colored fragments, or following text inherits the terminal's default
+	// background (especially visible after HEAD badges on light surfaces).
+	prefix := style.String()
+	text = strings.NewReplacer("\x1b[m", "\x1b[m"+prefix, "\x1b[0m", "\x1b[0m"+prefix).Replace(text)
+	return prefix + text + strings.Repeat(" ", max(0, width-ansi.StringWidth(text))) + ansi.ResetStyle
 }
 func safeLine(text string) string { return strings.ReplaceAll(gitrepo.Safe(text), "\n", "↵") }
 
@@ -165,15 +177,23 @@ func faded(c palette.Colors) palette.Colors {
 	return palette.Colors{Background: dim(c.Background), Panel: dim(c.Panel), Active: dim(c.Active), Selection: dim(c.Selection), Text: dim(c.Text), Muted: dim(c.Muted), Accent: dim(c.Accent)}
 }
 func (m *Model) contentWidth() int { return max(1, m.width-2*horizontalPadding) }
-func (m *Model) compactFooter() bool {
-	// A padded notice plus two footer rows needs at least 16 terminal rows to
-	// retain one complete commit. Share status/shortcuts below that height.
-	return m.height < 16 && (m.updates.status != "" || m.warnings() != "")
+func (m *Model) historyVisible() bool {
+	return m.width >= 100 || m.focus == "history"
+}
+func (m *Model) footerStatus() bool {
+	if m.activity() == "" && !m.closing {
+		return false
+	}
+	width := m.contentWidth()
+	if m.width >= 100 {
+		width /= 2
+	}
+	return !m.historyVisible() || m.historyStatusWidth(max(0, width-2*horizontalPadding)) < ansi.StringWidth(m.fetchStatus(m.colors()))
 }
 func (m *Model) footerHeight() int {
-	height := 2 // Operation status and keyboard shortcuts.
-	if m.compactFooter() {
-		height--
+	height := 1 // Keyboard shortcuts; fetch status lives in the history header.
+	if m.footerStatus() {
+		height++
 	}
 	if lines := m.footerNoticeLines(); len(lines) > 0 {
 		height += len(lines) + 2 // One blank row inside each end of the rule.
@@ -206,19 +226,83 @@ func (m *Model) paneWidth() int {
 	return width
 }
 func (m *Model) detailLines() []string {
+	c := m.colors()
+	if m.dialog != "" {
+		c = faded(c)
+	}
+	return m.detailContent(c, m.paneBackground("details", c))
+}
+
+func (m *Model) detailContent(c palette.Colors, bg string) []string {
 	if m.details == nil {
 		return nil
 	}
 	d := m.details
-	text := fmt.Sprintf("%s\n\n%s\nAuthor: %s <%s>\nAuthored: %s\nCommitter: %s <%s>\nCommitted: %s\nParents: %s\n\n%s\nChanged files\n", d.Message, d.SHA, d.Author, d.AuthorEmail, d.AuthoredAt, d.Committer, d.CommitterEmail, d.CommittedAt, strings.Join(d.Parents, " "), d.Comparison)
+	width := max(1, m.paneWidth()-2*horizontalPadding)
+	var rows []string
+	wrap := func(text string) {
+		rows = append(rows, strings.Split(ansi.Wrap(gitrepo.Safe(text), width, ""), "\n")...)
+	}
+	subject, body, _ := strings.Cut(strings.TrimRight(d.Message, "\n"), "\n")
+	sha := d.SHA[:min(8, len(d.SHA))]
+	heading := line(sha, len(sha), c.Accent, bg, false) + " " + safeLine(subject)
+	rows = append(rows, strings.Split(ansi.Wrap(heading, width, ""), "\n")...)
+	rows = append(rows, columns(safeLine(d.Author), relativeTime(d.AuthoredAt, m.now), width, width/2, c.Text, c.Muted, bg), "")
+	if body = strings.Trim(body, "\n"); body != "" {
+		wrap(body)
+		rows = append(rows, "")
+	}
+	green := m.semanticColor(c, "#4ade80", "#15803d")
+	red := errorColor(c)
 	for _, file := range d.Files {
 		name := file.Path
 		if file.OldPath != "" {
 			name = file.OldPath + " → " + name
 		}
-		text += file.Status + "  " + name + "\n"
+		statusColor := c.Muted
+		switch {
+		case strings.HasPrefix(file.Status, "A"):
+			statusColor = green
+		case strings.HasPrefix(file.Status, "D"):
+			statusColor = red
+		case strings.HasPrefix(file.Status, "M"):
+			statusColor = m.semanticColor(c, "#fbbf24", "#a16207")
+		case strings.HasPrefix(file.Status, "R"), strings.HasPrefix(file.Status, "C"):
+			statusColor = c.Accent
+		}
+		counts := ""
+		if file.Binary {
+			counts = "binary"
+		} else {
+			if file.Added > 0 {
+				text := fmt.Sprintf("+%d", file.Added)
+				counts = line(text, len(text), green, bg, false)
+			}
+			if file.Deleted > 0 {
+				if counts != "" {
+					counts += " "
+				}
+				text := fmt.Sprintf("-%d", file.Deleted)
+				counts += line(text, len(text), red, bg, false)
+			}
+		}
+		// Wrap names without losing their end, then align counts on the final
+		// line. Path controls are escaped before any trusted styling is added.
+		prefix := line(safeLine(file.Status), ansi.StringWidth(safeLine(file.Status)), statusColor, bg, false) + "  "
+		pathRows := strings.Split(ansi.Wrap(prefix+safeLine(name), width, ""), "\n")
+		last := len(pathRows) - 1
+		if counts != "" {
+			if ansi.StringWidth(pathRows[last])+2+ansi.StringWidth(counts) > width {
+				pathRows = append(pathRows, "")
+				last++
+			}
+			pathRows[last] = columns(pathRows[last], counts, width, width, c.Text, c.Muted, bg)
+		}
+		rows = append(rows, pathRows...)
 	}
-	return strings.Split(ansi.Wrap(gitrepo.Safe(text), max(1, m.paneWidth()-2*horizontalPadding), ""), "\n")
+	rows = append(rows, "")
+	wrap(fmt.Sprintf("%s\nAuthor: %s <%s>\nAuthored: %s\nCommitter: %s <%s>\nCommitted: %s\nParents: %s\n\n%s", d.SHA, d.Author, d.AuthorEmail, d.AuthoredAt, d.Committer, d.CommitterEmail, d.CommittedAt, strings.Join(d.Parents, " "), d.Comparison))
+	return rows
 }
 func (m *Model) selectionOutsideHistory() bool {
 	if m.selected == "" {
@@ -232,7 +316,7 @@ func (m *Model) selectionOutsideHistory() bool {
 	return true
 }
 func (m *Model) maxDetailsTop() int {
-	height := m.paneHeight() - 4
+	height := m.paneHeight() - 2
 	if m.selectionOutsideHistory() {
 		height--
 	}
@@ -242,7 +326,7 @@ func (m *Model) loadingLabel(label string, c palette.Colors) string {
 	return lipgloss.NewStyle().Foreground(lipgloss.Color(c.Accent)).Render(strings.TrimSpace(m.spinner.View())) + " " + label
 }
 
-func (m *Model) pane(kind string, width, height int, c palette.Colors) string {
+func (m *Model) paneBackground(kind string, c palette.Colors) string {
 	bg := c.Panel
 	focused := c.Active
 	// Keep existing custom theme files compatible: their Active token is the
@@ -253,21 +337,82 @@ func (m *Model) pane(kind string, width, height int, c palette.Colors) string {
 	if m.focus == kind {
 		bg = focused
 	}
+	return bg
+}
+
+type scopeSegment struct {
+	scope      gitrepo.Scope
+	start, end int
+	label      string
+}
+
+// The same terminal-cell allocation drives rendering and pointer hit testing.
+func (m *Model) scopeSegments() []scopeSegment {
+	width := m.contentWidth()
+	if m.width >= 100 {
+		width /= 2
+	}
+	inner := max(0, width-2*horizontalPadding)
+	all := min(5, (inner+1)/2)
+	if inner >= 14 {
+		all = 5
+	}
+	current := min(9, inner-all)
+	return []scopeSegment{{gitrepo.All, 0, all, " all "}, {gitrepo.Current, all, all + current, " current "}}
+}
+
+func (m *Model) historyStatusWidth(width int) int {
+	for _, segment := range m.scopeSegments() {
+		width -= segment.end - segment.start
+	}
+	return max(0, width-1) // Leave a gap after the scope buttons.
+}
+
+func (m *Model) fetchStatus(c palette.Colors) string {
+	status := "Not fetched this session"
+	if len(m.status.Remotes) == 0 {
+		status = "No remotes configured"
+	}
+	if !m.lastFetch.IsZero() {
+		status = "Fetched " + m.lastFetch.Format("15:04:05")
+	}
+	if m.fetchFailed {
+		status += " · last fetch failed"
+	}
+	if m.activity() != "" {
+		status = m.loadingLabel(m.activity(), c)
+	}
+	if m.closing {
+		status += " · waiting to quit"
+	}
+	return status
+}
+
+func (m *Model) historyHeader(width int, c palette.Colors, bg string) string {
+	active := m.activeScope()
+	var buttons string
+	for _, segment := range m.scopeSegments() {
+		fg, surface := c.Muted, c.Background
+		if segment.scope == active {
+			fg, surface = c.Text, c.Selection
+		}
+		buttons += line(segment.label, segment.end-segment.start, fg, surface, segment.scope == active)
+	}
+	remaining := max(0, width-ansi.StringWidth(buttons))
+	status := ansi.Truncate(m.fetchStatus(c), m.historyStatusWidth(width), "…")
+	return buttons + line("", remaining-ansi.StringWidth(status), c.Text, bg, false) + line(status, ansi.StringWidth(status), c.Muted, bg, false)
+}
+
+func (m *Model) pane(kind string, width, height int, c palette.Colors) string {
+	bg := m.paneBackground(kind, c)
 	inner := max(0, width-2*horizontalPadding)
 	rows := []string{line("", width, c.Text, bg, false)}
 	add := func(text string, bold bool) {
 		rows = append(rows, line("", horizontalPadding, c.Text, bg, false)+line(text, inner, c.Text, bg, bold)+line("", horizontalPadding, c.Text, bg, false))
 	}
-	title := "History"
 	if kind == "history" {
-		title += " · " + string(m.scope)
-	}
-	if kind == "details" {
-		title = "Commit details"
-	}
-	add(title, m.focus == kind)
-	add("", false)
-	if kind == "history" {
+		add(m.historyHeader(inner, c, bg), false)
+		add("", false)
 		if len(m.rows) == 0 && !m.loading {
 			add("No commits in this view", false)
 		}
@@ -300,10 +445,7 @@ func (m *Model) pane(kind string, width, height int, c palette.Colors) string {
 				}
 			}
 			sha := commit.SHA[:min(8, len(commit.SHA))]
-			meta := line(sha, len(sha), c.Muted, rowBG, false)
-			if len(tags) > 0 {
-				meta += "  " + strings.Join(tags, " ")
-			}
+			meta := sha + " • " + safeLine(commit.Author)
 			addCommitRow := func(left, right string, leftFG, rightFG string) {
 				contentWidth := max(0, inner-1-indent)
 				rows = append(rows,
@@ -314,7 +456,7 @@ func (m *Model) pane(kind string, width, height int, c palette.Colors) string {
 						line("", horizontalPadding, c.Text, bg, false))
 			}
 			addCommitRow(subject, relativeTime(commit.AuthoredAt, m.now), fg, c.Muted)
-			addCommitRow(meta, safeLine(commit.Author), fg, c.Muted)
+			addCommitRow(meta, strings.Join(tags, " "), c.Muted, c.Muted)
 		}
 	} else {
 		if m.selectionOutsideHistory() {
@@ -327,7 +469,7 @@ func (m *Model) pane(kind string, width, height int, c palette.Colors) string {
 				add("Select a commit", false)
 			}
 		} else {
-			lines := m.detailLines()
+			lines := m.detailContent(c, bg)
 			for i := min(m.detailsTop, len(lines)); i < len(lines) && len(rows) < height-1; i++ {
 				add(lines[i], false)
 			}
@@ -351,42 +493,36 @@ func (m *Model) baseView(c palette.Colors) string {
 	} else {
 		panes = m.pane(m.focus, w, m.paneHeight(), c)
 	}
-	status := "Not fetched this session"
-	if len(m.status.Remotes) == 0 {
-		status = "No remotes configured"
+	var footer []string
+	if m.footerStatus() {
+		status := m.fetchStatus(c)
+		if width := max(0, w-2*horizontalPadding); ansi.StringWidth(status) > width {
+			// Do not spend the only visible cells on a spinner or hide quit
+			// behind the operation it is waiting for.
+			status = m.activity()
+			if m.closing {
+				status = "waiting to quit"
+				if ansi.StringWidth(status) > width {
+					status = "Quit pending"
+				}
+			}
+		}
+		footer = append(footer, padded(status, c.Muted, c.Background))
 	}
-	if !m.lastFetch.IsZero() {
-		status = "Fetched " + m.lastFetch.Format("15:04:05")
-	}
-	if m.fetchFailed {
-		status += " · last fetch failed"
-	}
-	if m.activity() != "" {
-		status = m.loadingLabel(m.activity(), c)
-	}
-	if m.closing {
-		status += " · waiting to quit"
-	}
-	if m.compactFooter() {
-		status += " · Ctrl+P Commands · q Quit"
-	}
-	footer := padded(status, c.Muted, c.Background)
 	if lines := m.footerNoticeLines(); len(lines) > 0 {
 		edge := c.Accent
-		if m.warnings() != "" {
+		if m.notice != "" && m.noticeWarning {
 			edge = errorColor(c)
 		}
-		footer += "\n" + strings.Join(messageRows(lines, w, c, c.Background, edge), "\n")
+		footer = append(footer, strings.Join(messageRows(lines, w, c, c.Background, edge), "\n"))
 	}
-	if !m.compactFooter() {
-		hotkeyBackground := c.Panel
-		if hotkeyBackground == c.Background {
-			hotkeyBackground = c.Active
-		}
-		footer += "\n" + padded("↑↓ Navigate   Tab Pane   Ctrl+P Commands   q Quit", c.Muted, hotkeyBackground)
+	hotkeyBackground := c.Panel
+	if hotkeyBackground == c.Background {
+		hotkeyBackground = c.Active
 	}
+	footer = append(footer, padded("↑↓ Navigate   Tab Pane   Ctrl+P Commands   q Quit", c.Muted, hotkeyBackground))
 	separator := line("", w, c.Text, c.Background, false)
-	return lipgloss.NewStyle().Background(lipgloss.Color(c.Background)).Padding(1, horizontalPadding).Width(m.width).Height(m.height).MaxWidth(m.width).MaxHeight(m.height).Render(header + "\n" + separator + "\n" + panes + "\n" + separator + "\n" + footer)
+	return lipgloss.NewStyle().Background(lipgloss.Color(c.Background)).Padding(1, horizontalPadding).Width(m.width).Height(m.height).MaxWidth(m.width).MaxHeight(m.height).Render(header + "\n" + separator + "\n" + panes + "\n" + separator + "\n" + strings.Join(footer, "\n"))
 }
 
 func (m *Model) dialogWidth() int { return max(1, min(84, m.width-2*horizontalPadding)) }
@@ -416,16 +552,14 @@ func messageRows(lines []string, width int, c palette.Colors, bg, edge string) [
 
 func (m *Model) footerNoticeLines() []string {
 	var parts []string
-	if m.updates.status != "" {
-		text := m.updates.status
-		if m.updateBusy() {
-			text = strings.TrimSpace(ansi.Strip(m.spinner.View())) + " " + text
-		}
-		parts = append(parts, text)
+	if m.updateBusy() {
+		parts = append(parts, strings.TrimSpace(ansi.Strip(m.spinner.View()))+" "+m.updates.status)
 	}
-	warnings := m.warnings()
-	if warnings != "" {
-		parts = append(parts, warnings, "Ctrl+P → Show errors and warnings")
+	if m.notice != "" {
+		parts = append(parts, m.notice)
+		if m.noticeWarning {
+			parts = append(parts, "Ctrl+P → Show errors and warnings")
+		}
 	}
 	if len(parts) == 0 {
 		return nil
@@ -436,11 +570,15 @@ func (m *Model) footerNoticeLines() []string {
 	limit := max(1, min(4, m.height-15))
 	if len(lines) > limit {
 		lines = lines[:limit]
-		hint := "… Ctrl+P for update commands"
-		if warnings != "" {
-			hint = "… Ctrl+P → Show errors and warnings"
+		// On the smallest viewport retain the actual operation/notification,
+		// rather than replacing its only line with a navigation hint.
+		if limit > 1 {
+			hint := "… Ctrl+P for update commands"
+			if m.noticeWarning && m.notice != "" {
+				hint = "… Ctrl+P → Show errors and warnings"
+			}
+			lines[len(lines)-1] = hint
 		}
-		lines[len(lines)-1] = hint
 	}
 	return lines
 }
@@ -552,6 +690,7 @@ func (m *Model) View() tea.View {
 	}
 	view := tea.NewView(content)
 	view.AltScreen = true
+	view.MouseMode = tea.MouseModeCellMotion
 	view.BackgroundColor = lipgloss.Color(c.Background)
 	view.ForegroundColor = lipgloss.Color(c.Text)
 	return view

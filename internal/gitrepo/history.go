@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 )
 
@@ -288,5 +289,77 @@ func (r *Repository) Details(ctx context.Context, sha string) (Details, error) {
 		}
 		d.Files = append(d.Files, file)
 	}
+	// --name-status suppresses --numstat when combined. Read them separately
+	// against the same immutable SHA/first parent, matching raw path pairs rather
+	// than record order (rename numstat uses an extra NUL and two path fields).
+	for i, arg := range args {
+		if arg == "--name-status" {
+			args[i] = "--numstat"
+		}
+	}
+	out, err = r.git(ctx, "", append(args, sha, "--")...)
+	if err != nil {
+		return d, err
+	}
+	stats, err := parseNumstat(out)
+	if err != nil {
+		return d, err
+	}
+	for i := range d.Files {
+		file := &d.Files[i]
+		key := filePaths{file.OldPath, file.Path}
+		stat, ok := stats[key]
+		if !ok {
+			return d, errors.New("Git returned mismatched changed-file statistics.")
+		}
+		file.Added, file.Deleted, file.Binary = stat.Added, stat.Deleted, stat.Binary
+		delete(stats, key)
+	}
+	if len(stats) != 0 {
+		return d, errors.New("Git returned unexpected changed-file statistics.")
+	}
 	return d, nil
+}
+
+type filePaths struct{ old, path string }
+
+func parseNumstat(out string) (map[filePaths]ChangedFile, error) {
+	records, err := fields(out)
+	if err != nil {
+		return nil, err
+	}
+	stats := map[filePaths]ChangedFile{}
+	for i := 0; i < len(records); i++ {
+		added, rest, ok := strings.Cut(records[i], "\t")
+		deleted, path, hasPath := strings.Cut(rest, "\t")
+		if !ok || !hasPath {
+			return nil, errors.New("Git returned invalid changed-file statistics.")
+		}
+		key := filePaths{path: path}
+		if path == "" {
+			if i+2 >= len(records) {
+				return nil, errors.New("Git returned incomplete rename statistics.")
+			}
+			key = filePaths{records[i+1], records[i+2]}
+			i += 2
+		}
+		stat := ChangedFile{}
+		if added == "-" && deleted == "-" {
+			stat.Binary = true
+		} else {
+			stat.Added, err = strconv.Atoi(added)
+			if err != nil || stat.Added < 0 {
+				return nil, errors.New("Git returned an invalid added-line count.")
+			}
+			stat.Deleted, err = strconv.Atoi(deleted)
+			if err != nil || stat.Deleted < 0 {
+				return nil, errors.New("Git returned an invalid deleted-line count.")
+			}
+		}
+		if _, duplicate := stats[key]; duplicate || key.path == "" {
+			return nil, errors.New("Git returned duplicate or empty statistics paths.")
+		}
+		stats[key] = stat
+	}
+	return stats, nil
 }
