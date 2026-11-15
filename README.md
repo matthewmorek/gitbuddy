@@ -1,3 +1,5 @@
+![GitBuddy Splash](public/gitbuddy-terminal-app.png)
+
 # Gitbuddy
 
 A keyboard-first Git history browser for your terminal.
@@ -59,17 +61,17 @@ Repository subdirectories also work. History opens on the **current branch and
 its upstream**, including incoming commits; choose **Ctrl+P → All branches** for
 the wider view. Start with **Ctrl+P** to explore commands and settings.
 
-| Key | Action |
-| --- | --- |
-| Ctrl+P | Search commands **and individual settings** |
-| ↑ / ↓ or k / j | Select a commit; scroll when details have focus |
-| Page Up / Page Down | Move a page |
-| Tab / Shift+Tab | Switch pane |
-| Enter | Open details on a narrow terminal; apply a palette choice |
-| Escape | Close a dialog or return to history |
-| r | Refresh local history and status |
-| q | Quit outside text input |
-| Ctrl+C | Close a dialog; otherwise request orderly quit |
+| Key                 | Action                                                    |
+| ------------------- | --------------------------------------------------------- |
+| Ctrl+P              | Search commands **and individual settings**               |
+| ↑ / ↓ or k / j      | Select a commit; scroll when details have focus           |
+| Page Up / Page Down | Move a page                                               |
+| Tab / Shift+Tab     | Switch pane                                               |
+| Enter               | Open details on a narrow terminal; apply a palette choice |
+| Escape              | Close a dialog or return to history                       |
+| r                   | Refresh local history and status                          |
+| q                   | Quit outside text input                                   |
+| Ctrl+C              | Close a dialog; otherwise request orderly quit            |
 
 Automatic fetching starts after local history renders and repeats **every five
 minutes** by default. Disable it or change the interval in **Ctrl+P → Settings**.
