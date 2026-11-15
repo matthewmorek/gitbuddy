@@ -79,12 +79,11 @@ func (m *Model) header(c palette.Colors) string {
 	}
 	// Preserve at least the app name and separator before spending space on refs.
 	rightLimit := max(0, width-min(width, len("Gitbuddy / "))-horizontalPadding)
-	branchWidth := rightLimit - 2 - 3 - ansi.StringWidth(counts)
+	branchWidth := rightLimit - 3 - ansi.StringWidth(counts)
 	var trailing string
 	if branchWidth > 0 {
 		name := ansi.Truncate(safeLine(branch), branchWidth, "…")
-		trailing = line("⎇ ", 2, c.Muted, c.Background, false) +
-			line(name, ansi.StringWidth(name), c.Accent, c.Background, false) +
+		trailing = line(name, ansi.StringWidth(name), c.Accent, c.Background, false) +
 			line(" | ", 3, c.Muted, c.Background, false) +
 			line(counts, ansi.StringWidth(counts), countsColor, c.Background, false)
 	} else {
@@ -255,10 +254,6 @@ func (m *Model) detailContent(c palette.Colors, bg string) []string {
 	green := m.semanticColor(c, "#4ade80", "#15803d")
 	red := errorColor(c)
 	for _, file := range d.Files {
-		name := file.Path
-		if file.OldPath != "" {
-			name = file.OldPath + " → " + name
-		}
 		statusColor := c.Muted
 		switch {
 		case strings.HasPrefix(file.Status, "A"):
@@ -286,23 +281,75 @@ func (m *Model) detailContent(c palette.Colors, bg string) []string {
 				counts += line(text, len(text), red, bg, false)
 			}
 		}
-		// Wrap names without losing their end, then align counts on the final
-		// line. Path controls are escaped before any trusted styling is added.
-		prefix := line(safeLine(file.Status), ansi.StringWidth(safeLine(file.Status)), statusColor, bg, false) + "  "
-		pathRows := strings.Split(ansi.Wrap(prefix+safeLine(name), width, ""), "\n")
-		last := len(pathRows) - 1
-		if counts != "" {
-			if ansi.StringWidth(pathRows[last])+2+ansi.StringWidth(counts) > width {
-				pathRows = append(pathRows, "")
-				last++
-			}
-			pathRows[last] = columns(pathRows[last], counts, width, width, c.Text, c.Muted, bg)
+		// Reserve status and counts before shortening paths. Where space permits,
+		// keep a path cell; on tiny panes counts may need truncation themselves.
+		status := safeLine(file.Status)
+		statusWidth := min(width, ansi.StringWidth(status))
+		statusGap := min(horizontalPadding, width-statusWidth)
+		remaining := width - statusWidth - statusGap
+		countWidth := min(ansi.StringWidth(counts), max(0, remaining-1-horizontalPadding))
+		countGap := 0
+		if countWidth > 0 {
+			countGap = horizontalPadding
 		}
-		rows = append(rows, pathRows...)
+		pathWidth := remaining - countWidth - countGap
+		name := changedFileName(file.Path, file.OldPath, pathWidth)
+		rows = append(rows, line(status, statusWidth, statusColor, bg, false)+
+			line("", statusGap, c.Text, bg, false)+line(name, pathWidth, c.Text, bg, false)+
+			line("", countGap, c.Text, bg, false)+line(counts, countWidth, c.Muted, bg, false))
 	}
 	rows = append(rows, "")
 	wrap(fmt.Sprintf("%s\nAuthor: %s <%s>\nAuthored: %s\nCommitter: %s <%s>\nCommitted: %s\nParents: %s\n\n%s", d.SHA, d.Author, d.AuthorEmail, d.AuthoredAt, d.Committer, d.CommitterEmail, d.CommittedAt, strings.Join(d.Parents, " "), d.Comparison))
 	return rows
+}
+
+// boundedPath takes sanitized text. Keep the full basename when possible,
+// spending spare cells on the leading path; long basenames retain their end
+// (including the extension) and a shorter leading fragment.
+func boundedPath(path string, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	cells := ansi.StringWidth(path)
+	if cells <= width {
+		return path
+	}
+	base := path[strings.LastIndex(path, "/")+1:]
+	tailWidth := min(ansi.StringWidth(base), width-1)
+	if ansi.StringWidth(base) > width-1 {
+		tailWidth = width - 1 - (width-1)/3
+	}
+	// The ANSI truncators in v0.11.9 count ASCII bases separately from
+	// following selectors/keycaps. Measure whole clusters at both cuts instead.
+	tail, tailCells := path, cells
+	for tailCells > tailWidth {
+		cluster, clusterWidth := ansi.FirstGraphemeCluster(tail, ansi.GraphemeWidth)
+		tail = tail[len(cluster):]
+		tailCells -= clusterWidth
+	}
+	headEnd, headCells := 0, 0
+	for headEnd < len(path) {
+		cluster, clusterWidth := ansi.FirstGraphemeCluster(path[headEnd:], ansi.GraphemeWidth)
+		if headCells+clusterWidth > width-1-tailCells {
+			break
+		}
+		headEnd += len(cluster)
+		headCells += clusterWidth
+	}
+	return path[:headEnd] + "…" + tail
+}
+
+func changedFileName(path, oldPath string, width int) string {
+	path, oldPath = safeLine(path), safeLine(oldPath)
+	if oldPath == "" || width < 7 {
+		return boundedPath(path, width)
+	}
+	// Share the space, returning unused cells from a short path to the other.
+	available := width - ansi.StringWidth(" → ")
+	oldWidth := min(ansi.StringWidth(oldPath), available/2)
+	newWidth := min(ansi.StringWidth(path), available-oldWidth)
+	oldWidth = min(ansi.StringWidth(oldPath), available-newWidth)
+	return boundedPath(oldPath, oldWidth) + " → " + boundedPath(path, newWidth)
 }
 func (m *Model) selectionOutsideHistory() bool {
 	if m.selected == "" {
@@ -425,7 +472,7 @@ func (m *Model) pane(kind string, width, height int, c palette.Colors) string {
 			}
 			marker := " "
 			if selected {
-				marker = "▌"
+				marker = "▎"
 			}
 			indent := horizontalPadding
 			if m.snapshot.Diverged && commit.Relation == gitrepo.LocalOnly {
@@ -598,8 +645,6 @@ func (m *Model) dialogView(c palette.Colors, width, height int) string {
 	add := func(text string) { rows = append(rows, line(text, inner, c.Text, c.Panel, false)) }
 	title := "Commands"
 	switch m.dialog {
-	case "confirm-update":
-		title = "Install update · restart is optional"
 	case "settings":
 		title = "Settings"
 	case "themes":
@@ -651,7 +696,11 @@ func (m *Model) dialogView(c palette.Colors, width, height int) string {
 				marker := " "
 				if i == choice {
 					bg = c.Selection
-					marker = "▌"
+					marker = "▎"
+				}
+				fg, markerFG := c.Text, c.Accent
+				if a.disabled != "" {
+					fg, markerFG = c.Muted, c.Muted
 				}
 				suffix := a.category
 				if a.value != "" {
@@ -662,7 +711,7 @@ func (m *Model) dialogView(c palette.Colors, width, height int) string {
 				}
 				suffix = ansi.Truncate(suffix, max(1, inner*45/100), "…")
 				left := max(0, inner-2-ansi.StringWidth(suffix))
-				rows = append(rows, line(marker, 1, c.Accent, bg, false)+line(strings.Repeat(" ", horizontalPadding)+safeLine(a.title), left, c.Text, bg, false)+line(" "+suffix, inner-left-1, c.Muted, bg, false))
+				rows = append(rows, line(marker, 1, markerFG, bg, false)+line(strings.Repeat(" ", horizontalPadding)+safeLine(a.title), left, fg, bg, false)+line(" "+suffix, inner-left-1, c.Muted, bg, false))
 			}
 			if len(options) == 0 {
 				add("No matching commands")

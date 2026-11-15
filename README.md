@@ -145,7 +145,7 @@ Gitbuddy checks for a newer **stable** release in the background after startup.
 It never installs an update or restarts without your choice.
 
 1. Open **Ctrl+P → Check for updates** to check manually.
-2. Choose **Install update** and confirm when a newer version is available.
+2. Choose **Install update** and press Enter to install an available newer version.
 3. Choose **Restart** when ready, or use the new version on your next launch.
 
 Prereleases do not appear in these checks. To install a particular published

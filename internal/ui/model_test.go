@@ -320,7 +320,7 @@ func TestLayoutPaddingGapAndCompactPalette(t *testing.T) {
 				t.Fatal("settings in footer")
 			}
 		}
-		if history < 0 || strings.TrimSpace(lines[history+1][:59]) != "" || !strings.Contains(lines[history+2], "▌") {
+		if history < 0 || strings.TrimSpace(lines[history+1][:59]) != "" || !strings.Contains(lines[history+2], "▎") {
 			t.Fatal("history gap/selection")
 		}
 		if !strings.HasPrefix(lines[1], "    Gitbuddy / repository") {
@@ -402,7 +402,7 @@ func TestIncomingAndDivergedLocalHistoryPresentation(t *testing.T) {
 		// marker/background still make keyboard focus clear.
 		incoming := find(rows, "incoming subject")
 		if !strings.Contains(incoming, coloredPrefix("incoming subject", c.Muted, c.Selection)) ||
-			!strings.Contains(incoming, line("▌", 1, c.Accent, c.Selection, false)) {
+			!strings.Contains(incoming, line("▎", 1, c.Accent, c.Selection, false)) {
 			t.Fatalf("%s incoming styling lost dimming or selection", mode)
 		}
 		baseline := horizontalPadding + 1 + horizontalPadding

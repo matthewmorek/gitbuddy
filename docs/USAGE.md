@@ -170,7 +170,9 @@ Automatic check failures are quiet. **Ctrl+P → Check for updates** checks
 manually, including after reconnecting; manual errors appear in **Show errors
 and warnings**.
 
-**Install update** requires confirmation and is available only for release-built
+**Install update** starts with a single Enter when a newer release is available.
+It remains visible but disabled until then, as does **Restart** until installation
+succeeds. Installation is available only for release-built
 macOS arm64 or Linux x86_64 executables named `gitbuddy` in a safe, user-owned
 installation. Linux is part of the unreleased `0.1.2` candidate and has not yet
 passed native or hosted verification. Linux requires `/bin/bash`, `curl`, working

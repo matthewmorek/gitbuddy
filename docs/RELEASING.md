@@ -311,10 +311,11 @@ the existing executable and preferences. Checksums do not defend against a
 compromised release host.
 
 Release builds also support **Ctrl+P → Check for updates / Install update**.
-The app performs one nonblocking stable-release check after startup, but always
-requires confirmation to install. It verifies pinned downloads and replaces only
-a safe user-owned regular `gitbuddy` executable on macOS arm64 or Linux x86_64, never a development
-build or symlink. Unsafe/nonstandard installations receive manual guidance.
+The app performs one nonblocking stable-release check after startup; choosing
+**Install update** with Enter starts installation directly. It verifies pinned
+downloads and replaces only a safe user-owned regular `gitbuddy` executable on
+macOS arm64 or Linux x86_64, never a development build or symlink.
+Unsafe/nonstandard installations receive manual guidance.
 Installation and Git mutations cannot overlap. Quit cancels downloads and waits
 for installation/Git settlement; **Restart** is a separate opt-in command after
 installation, executed only after terminal restoration. No daemon or preference
@@ -353,8 +354,10 @@ app to discover it. Keeping `0.1.2` a draft or prerelease will not test that pat
    After the new stable release is available, relaunch `0.1.1` and confirm the
    background notice appears without taking focus or installing anything.
    Check **Ctrl+P → Check for updates** before proceeding too.
-2. Choose **Install update**, confirm, and verify the executable now reports
-   `gitbuddy 0.1.2`. The existing TUI must stay usable without an automatic restart.
+2. In the historical `0.1.1` app, choose **Install update**, confirm, and verify the
+   executable now reports `gitbuddy 0.1.2`. For versions with direct installation,
+   a single Enter on **Install update** must start installation without a submenu.
+   The existing TUI must stay usable without an automatic restart.
 3. Choose **Restart** explicitly. Confirm terminal restoration, reopening the
    same repository, preserved settings and `0.1.2` running. Active Git operations
    must settle rather than being interrupted.
@@ -366,7 +369,7 @@ or remove the installation.
 
 For Linux, first test a pinned installer on a native Ubuntu/GNU host once a
 Linux-capable candidate is hosted; this does not exercise in-app discovery.
-Complete the live Linux background/manual discovery, confirmed install and
+Complete the live Linux background/manual discovery, single-Enter install and
 optional restart trial only after two Linux-capable stable versions exist.
 Keep the current installation usable through the update, allow terminal and Git
 work to settle before restart, and verify the same repository and preferences

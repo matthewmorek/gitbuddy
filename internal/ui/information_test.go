@@ -93,7 +93,7 @@ func TestSplitHeaderTracksBranchAndUpstreamCounts(t *testing.T) {
 		header := m.header(c)
 		text := ansi.Strip(header)
 		if !strings.HasPrefix(text, "  Gitbuddy / repository") ||
-			!strings.HasSuffix(text, "⎇ feature/demo | ↑2 ↓0  ") ||
+			!strings.HasSuffix(text, "feature/demo | ↑2 ↓0  ") || strings.Contains(text, "⎇") ||
 			strings.Count(text, "feature/demo") != 1 ||
 			ansi.StringWidth(header) != m.contentWidth() {
 			t.Fatalf("header sections/alignment: %q", text)
@@ -172,7 +172,7 @@ func TestRefreshHeaderKeepsSnapshotIdentity(t *testing.T) {
 	}
 	m.Update(m.refresh(gitrepo.Current)())
 	header := ansi.Strip(m.header(m.colors()))
-	if !strings.Contains(header, "⎇ feature/topic | ↑2 ↓1") || strings.Contains(header, "main") {
+	if !strings.Contains(header, "feature/topic | ↑2 ↓1") || strings.Contains(header, "main") {
 		t.Fatalf("header paired old status with new snapshot counts: %q", header)
 	}
 	// A detached or unborn snapshot must not fall back to the old main status.
@@ -183,7 +183,7 @@ func TestRefreshHeaderKeepsSnapshotIdentity(t *testing.T) {
 	}
 	repo.snapshot = &gitrepo.Snapshot{Branch: "unborn"}
 	m.Update(m.refresh(gitrepo.Current)())
-	if header := ansi.Strip(m.header(m.colors())); !strings.Contains(header, "⎇ unborn | ↑— ↓—") {
+	if header := ansi.Strip(m.header(m.colors())); !strings.Contains(header, "unborn | ↑— ↓—") {
 		t.Fatalf("header did not follow unborn snapshot: %q", header)
 	}
 }
@@ -309,7 +309,82 @@ func TestDetailsContentOrderStatisticsAndSafeWrapping(t *testing.T) {
 		}
 	}
 	if !strings.Contains(ansi.Strip(strings.Join(m.detailLines(), "\n")), "END") {
-		t.Fatal("wrapped filename lost its end")
+		t.Fatal("shortened filename lost its end")
+	}
+}
+
+func TestChangedFileNamesUsePathAwareCellBudgets(t *testing.T) {
+	for _, tc := range []struct {
+		path, oldPath string
+		width         int
+		want          string
+	}{
+		{"src/file.go", "", 11, "src/file.go"},
+		{"src/deep/nested/file.go", "", 16, "src/deep…file.go"},
+		{"src/deep/file.go", "", 8, "…file.go"},
+		{"abcdefghijklmnop.go", "", 12, "abc…lmnop.go"},
+		{"src/👩🏽‍💻👩🏽‍💻/é.go", "", 10, "src/…é.go"},
+		{"👩🏽‍💻👩🏽‍💻", "", 2, "…"},
+		{"1️⃣/abcdef.go", "", 10, "…abcdef.go"},
+		{"a1️⃣/abcdef.go", "", 12, "a…abcdef.go"},
+		{"abc1️⃣def.go", "", 8, "ab…ef.go"},
+		{"abcdef1️⃣.go", "", 7, "abc….go"},
+		{"abcdef1️⃣.go", "", 8, "ab…1️⃣.go"},
+		{"new/deep/other.go", "old/deep/file.go", 25, "old…file.go → ne…other.go"},
+		{"new/deep/other.go", "x", 22, "x → new/deep/other.go"},
+		{"new.go", "old.go", 5, "n….go"},
+		{"new\nname\x1b[2J", "old\tname", 40, `old\tname → new↵name\x1b[2J`},
+		{"file.go", "", 1, "…"},
+		{"file.go", "", 0, ""},
+	} {
+		got := changedFileName(tc.path, tc.oldPath, tc.width)
+		if got != tc.want || ansi.StringWidth(got) > tc.width {
+			t.Errorf("paths %q → %q at %d cells: got %q, want %q", tc.oldPath, tc.path, tc.width, got, tc.want)
+		}
+	}
+}
+
+func TestDetailsFilesStayOnSingleRowsWithReservedStatistics(t *testing.T) {
+	m, _ := setup(t, 3)
+	m.details = &gitrepo.Details{
+		SHA: "a", Message: "s", Author: "A",
+		Files: []gitrepo.ChangedFile{
+			{Status: "M", Path: "internal/" + strings.Repeat("👩🏽‍💻/日本語/é/", 8) + "filename.go", Added: 118, Deleted: 6},
+			{Status: "R100", OldPath: "old/" + strings.Repeat("nested/", 8) + "old.go", Path: "new/" + strings.Repeat("nested/", 8) + "new.go"},
+			{Status: "C100", OldPath: "source.bin", Path: strings.Repeat("copy/", 8) + "target.bin", Binary: true},
+		},
+	}
+	for _, width := range []int{1, 2, 5, 10, 20, 40, 84} {
+		m.width = width + 2*horizontalPadding*2
+		lines := m.detailLines()
+		// The three rows immediately before metadata must always be the files,
+		// regardless of how much subject/author wrapping tiny panes require.
+		fileStart := 0
+		for i, row := range lines {
+			if ansi.Strip(row) == "" {
+				fileStart = i + 1
+				break
+			}
+		}
+		if lines[fileStart+len(m.details.Files)] != "" {
+			t.Fatalf("width %d: a file wrapped onto another row", width)
+		}
+		for i, row := range lines[fileStart : fileStart+len(m.details.Files)] {
+			text := ansi.Strip(row)
+			if ansi.StringWidth(row) != width || strings.ContainsAny(text, "\n\x1b") {
+				t.Fatalf("width %d file %d escaped its single-row cell budget: %q", width, i, text)
+			}
+			if width >= 40 {
+				for _, token := range [][]string{{"M  internal/", "filename.go", "+118 -6"}, {"R100  ", "old.go → ", "new.go"}, {"C100  source.bin → ", "target.bin", "binary"}}[i] {
+					if !strings.Contains(text, token) {
+						t.Fatalf("width %d: file %d lost %q: %q", width, i, token, text)
+					}
+				}
+			}
+			if width == 40 {
+				t.Logf("rendered file: %s", text)
+			}
+		}
 	}
 }
 

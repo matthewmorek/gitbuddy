@@ -3,10 +3,14 @@ package ui
 import (
 	"context"
 	"errors"
+	"image/color"
 	"strings"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
+	uv "github.com/charmbracelet/ultraviolet"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/matthewmorek/gitbuddy/internal/updater"
 )
 
@@ -127,26 +131,16 @@ func TestDisabledAutomaticCheckRetainsManualCommand(t *testing.T) {
 	}
 }
 
-func TestInstallNeedsExplicitConfirmationAndDoesNotRestart(t *testing.T) {
+func TestPaletteInstallStartsWithSingleEnterAndRestartStaysExplicit(t *testing.T) {
 	m, service := availableUpdate(t)
-	m.execute(action{id: "install-update"})
-	if m.dialog != "confirm-update" || m.options()[m.choice].id != "cancel-update" {
-		t.Fatal("confirmation must default to Cancel")
-	}
-	press(m, tea.KeyEnter, "")
-	if m.dialog != "" || service.installs != 0 || m.updates.installing {
-		t.Fatal("default confirmation installed")
-	}
-	m.execute(action{id: "install-update"})
-	press(m, tea.KeyEscape, "")
-	if service.installs != 0 {
-		t.Fatal("Escape installed")
-	}
-	m.execute(action{id: "install-update"})
-	press(m, tea.KeyDown, "")
+	m.openDialog("commands", "Install update")
 	command := press(m, tea.KeyEnter, "")
 	if !m.updates.installing || service.installs != 0 || m.dialog != "" {
 		t.Fatal("installation did not stay behind the command boundary")
+	}
+	m.Update(updateInstallMsg{request: m.updates.request - 1, version: "stale"})
+	if !m.updates.installing || m.updates.installed != "" || m.RestartRequested() {
+		t.Fatal("stale installation result changed the pending operation")
 	}
 	m.Update(updateResult(t, command))
 	if service.installs != 1 || m.updates.installed != "0.1.1" ||
@@ -156,12 +150,122 @@ func TestInstallNeedsExplicitConfirmationAndDoesNotRestart(t *testing.T) {
 	if !strings.Contains(plain(m), "installed") || m.installUpdate() != nil {
 		t.Fatal("missing installed notice or duplicate installation allowed")
 	}
+	m.openDialog("commands", "Restart")
+	command = press(m, tea.KeyEnter, "")
+	if command == nil || command() != tea.Quit() || !m.RestartRequested() || m.dialog != "" {
+		t.Fatal("single Enter on Restart did not directly request orderly restart")
+	}
+}
+
+func TestFailedPaletteInstallKeepsRestartDisabledAndAllowsRetry(t *testing.T) {
+	m, service := availableUpdate(t)
+	service.install = func(context.Context, updater.Release) error { return errors.New("offline") }
+	m.openDialog("commands", "Install update")
+	m.Update(updateResult(t, press(m, tea.KeyEnter, "")))
+	m.openDialog("commands", "Restart")
+	options := m.options()
+	if len(options) != 1 || options[0].disabled == "" || m.updates.installed != "" ||
+		m.updates.installing || m.RestartRequested() || !strings.Contains(m.warnings(), "Install update: offline") {
+		t.Fatal("failed installation enabled restart or lost its error")
+	}
+	press(m, tea.KeyEnter, "")
+	if m.RestartRequested() || m.closing || service.installs != 1 {
+		t.Fatal("restart after failed installation performed an action")
+	}
+	service.install = nil
+	m.openDialog("commands", "Install update")
+	m.Update(updateResult(t, press(m, tea.KeyEnter, "")))
+	if service.installs != 2 || m.updates.installed != "0.1.1" || m.updates.failure != "" || m.RestartRequested() {
+		t.Fatal("single-Enter retry did not recover without restarting")
+	}
+}
+
+func TestPaletteUpdateCommandsStayVisibleAndDisabledUntilReady(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		change func(*Model)
+	}{
+		{"no service", func(m *Model) { m.updates = newAppUpdates(nil, false) }},
+		{"no newer release", func(m *Model) { m.updates.available = updater.Release{} }},
+		{"unsupported installation", func(m *Model) { m.updates.installReason = "Use the shell installer" }},
+		{"checking", func(m *Model) { m.updates.checking = true }},
+		{"installing", func(m *Model) { m.updates.installing = true }},
+		{"Git mutation", func(m *Model) { m.operation = "Fetching" }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m, service := availableUpdate(t)
+			tc.change(m)
+			for _, title := range []string{"Install update", "Restart"} {
+				m.openDialog("commands", title)
+				options := m.options()
+				if len(options) != 1 || options[0].title != title || options[0].disabled == "" {
+					t.Fatalf("%s must remain visible and disabled", title)
+				}
+				reason := options[0].disabled
+				if !strings.Contains(ansi.Strip(m.dialogView(m.colors(), 84, 28)), reason) {
+					t.Fatalf("%s did not display its disabled reason %q", title, reason)
+				}
+				request, installing := m.updates.request, m.updates.installing
+				press(m, tea.KeyEnter, "") // May schedule notification expiry, not installation.
+				if m.dialog != "commands" || m.updates.request != request || m.updates.installing != installing ||
+					service.installs != 0 || m.RestartRequested() || m.closing {
+					t.Fatalf("disabled %s performed an action", title)
+				}
+			}
+		})
+	}
+}
+
+func TestDisabledUpdateRowsAreMutedWithoutLosingSelection(t *testing.T) {
+	m, _ := setup(t, 3)
+	m.updates = newAppUpdates(&fakeUpdates{}, false)
+	for _, mode := range []string{"dark", "light"} {
+		m.settings.Value.ColorMode = mode
+		c := m.colors()
+		for _, query := range []string{"update", "Install update", "Restart"} {
+			m.openDialog("commands", query)
+			rendered := m.dialogView(c, 84, 28)
+			rows := uv.NewStyledString(rendered).Lines(ansi.GraphemeWidth)
+			found := false
+			for _, row := range rows {
+				text := row.String()
+				title := "Install update"
+				if query == "Restart" {
+					title = "Restart"
+				}
+				start := strings.Index(text, title)
+				if start < 0 || !strings.HasSuffix(strings.TrimSpace(text), "App") {
+					continue
+				}
+				start = ansi.StringWidth(text[:start])
+				found = true
+				bg := c.Selection
+				if query == "update" {
+					bg = c.Panel // Check for updates is selected instead.
+				}
+				for _, cell := range row[start : start+len(title)] {
+					if cell.Style.Fg == nil || color.RGBAModel.Convert(cell.Style.Fg) != color.RGBAModel.Convert(lipgloss.Color(c.Muted)) ||
+						cell.Style.Bg == nil || color.RGBAModel.Convert(cell.Style.Bg) != color.RGBAModel.Convert(lipgloss.Color(bg)) {
+						t.Fatalf("%s %s: disabled row lost muted styling or selection surface", mode, query)
+					}
+				}
+				if query != "update" && !strings.Contains(text, "▎") {
+					t.Fatal("selected command did not use the notification's left rule")
+				}
+			}
+			if !found {
+				t.Fatalf("%s command row not rendered", query)
+			}
+			if mode == "dark" && query == "Install update" {
+				t.Logf("rendered disabled command:\n%s", ansi.Strip(rendered))
+			}
+		}
+	}
 }
 
 func TestInstallCompletionPreservesPaletteQuitSelection(t *testing.T) {
 	m, service := availableUpdate(t)
-	m.execute(action{id: "install-update"})
-	press(m, tea.KeyDown, "")
+	m.openDialog("commands", "Install update")
 	command := press(m, tea.KeyEnter, "")
 	if !m.updates.installing || service.installs != 0 {
 		t.Fatal("installation must be pending before opening the palette")

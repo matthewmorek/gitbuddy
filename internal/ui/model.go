@@ -631,11 +631,6 @@ type action struct{ id, title, category, value, disabled, shortcut string }
 func (m *Model) options() []action {
 	var options []action
 	switch m.dialog {
-	case "confirm-update":
-		options = []action{
-			{id: "cancel-update", title: "Cancel", category: "App"},
-			{id: "confirm-update", title: "Install Gitbuddy " + m.updates.available.Version, category: "App", disabled: m.updateInstallDisabled()},
-		}
 	case "themes":
 		for _, name := range m.themes.Names {
 			options = append(options, action{id: "theme", title: name, category: "Settings › Theme", value: name})
@@ -705,13 +700,7 @@ func (m *Model) execute(a action) tea.Cmd {
 	case "check-updates":
 		return m.checkUpdates(true)
 	case "install-update":
-		if !m.closing && m.updateInstallDisabled() == "" {
-			return m.openDialog("confirm-update", "")
-		}
-	case "confirm-update":
 		return m.installUpdate()
-	case "cancel-update":
-		return nil
 	case "restart":
 		if m.updates.installed != "" {
 			m.updates.restart = true
