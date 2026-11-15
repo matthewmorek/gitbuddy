@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.2.1] — patch candidate
+
+- Keep changed files and their statistics on one detail row, shortening long paths
+  in the middle with Unicode-safe cuts that retain filenames where space permits.
+- Use a consistent `▎` selected-list marker and remove the header's branch icon.
+- Start **Install update** and **Restart** with a single Enter, without a submenu.
+  Both commands stay visible but disabled until eligible; restart remains opt-in.
+- Build both release binaries on Linux in CI, then verify and execute the original
+  Darwin binary on macOS before creating a draft. Hosted validation remains pending.
+
+macOS arm64 and Linux x86_64. The macOS build is unsigned and not notarized;
+existing settings are preserved. Live installation, update and restart trials
+remain separate from local build checks.
+
 ## [0.2.0] — release candidate
 
 - Add a clickable all/current branch switch with fetch status in the history header.
