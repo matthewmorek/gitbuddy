@@ -2,8 +2,6 @@
 
 Gitbuddy opens one Git repository per process. For installation, basic shortcuts
 and contributions, start with the [README](../README.md).
-This guide describes the `0.2.0` candidate; the released `0.1.1` still opens
-all-branch history by default.
 
 ## Header and commit rows
 
@@ -26,7 +24,7 @@ Each commit uses two rows:
 One minute clock redraws relative times without fetching, refreshing Git,
 changing selection or disturbing an open command palette. Full absolute dates
 and author/committer identities remain in commit details. Long fields truncate
-to fit the terminal; no patched icon font is required for the branch glyph.
+to fit the terminal; no patched icon font is required.
 
 ## History and details
 
@@ -162,6 +160,56 @@ Supply at least one complete `dark` or `light` mode; a missing mode uses the
 other. All seven colors must be `#RRGGBB`, and `active` must be darker than
 `panel`. See [third-party notices](../THIRD_PARTY_NOTICES.md) for provenance.
 
+## Installation options and security
+
+The installer supports macOS arm64 and Linux x86_64. It requires `/bin/bash`,
+`curl`, Git and platform hash/stat utilities; Linux uses GNU `stat` and
+`sha256sum`. Ubuntu/GNU is the initial Linux target, not a guarantee for musl,
+minimal distributions or particular kernels. The app itself needs no Go, Python
+or Node.
+
+Without options, the installer selects the latest published stable release and
+refuses an implicit downgrade. To select a published version explicitly,
+including a prerelease or intentional rollback, pass its `X.Y.Z` version:
+
+```sh
+curl -fsSL https://matthewmorek.github.io/gitbuddy/install.sh | sh -s -- --version X.Y.Z
+```
+
+Use `--install-dir /absolute/path` to choose another destination. The default is
+`~/.local/bin`; if that directory is not on `PATH`, add it for the current shell:
+
+```sh
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+For future terminals, add that line to your shell configuration (for example,
+`~/.zshrc` for zsh). Use your chosen directory if you set `--install-dir`.
+
+To inspect before running, download the installer, check that the download
+succeeded, read it, then invoke it:
+
+```sh
+curl -fsSL https://matthewmorek.github.io/gitbuddy/install.sh -o install-gitbuddy.sh &&
+  less install-gitbuddy.sh &&
+  sh install-gitbuddy.sh
+```
+
+Use `sh install-gitbuddy.sh --help` to see all installer options.
+Piping a script to a shell executes code from the installer host. Binary
+checksums detect corruption, not a compromised installer or release host.
+A pipeline can hide a failed download; the inspection command above stops on
+failure. The installer does not use `sudo`, edit shell profiles or preferences,
+or change macOS security settings. Releases for macOS are unsigned and not
+notarized; Gatekeeper may block execution. Do not disable Gatekeeper or remove
+quarantine.
+
+Self-update is available only to release-built executables named `gitbuddy` in
+a safe, user-owned installation. Root/system installations, source builds,
+symlinked executables and unsafe ownership or permissions require manual
+installation. Downloads are pinned to one version; checksum and executable-version
+validation precede replacement.
+
 ## Updates and shutdown
 
 The app checks once per launch for a newer **published stable** release.
@@ -172,18 +220,9 @@ and warnings**.
 
 **Install update** starts with a single Enter when a newer release is available.
 It remains visible but disabled until then, as does **Restart** until installation
-succeeds. Installation is available only for release-built
-macOS arm64 or Linux x86_64 executables named `gitbuddy` in a safe, user-owned
-installation. Linux is part of the unreleased `0.1.2` candidate and has not yet
-passed native or hosted verification. Linux requires `/bin/bash`, `curl`, working
-Git and GNU `stat`, `sha256sum` and common utilities for installation; the app
-itself needs no Go, Python or Node. Ubuntu/GNU is the initial target; compatibility
-with musl, minimal distributions or particular kernels is not established.
-Development builds, symlinked paths and unsafe ownership/permissions require
-manual installation. Downloads are pinned to one version; checksum and
-executable-version validation precede replacement. No signing, quarantine or
-macOS security settings are changed. The unsigned/Gatekeeper warning applies only
-to macOS.
+succeeds. See
+[installation options and security](#installation-options-and-security) for
+platform requirements and installer restrictions.
 
 Installation cannot start during a Git mutation, and Git mutations cannot start
 during installation. Quit cancels downloads and waits for installation and Git
@@ -199,10 +238,9 @@ prerelease or intentional rollback.
 ## Scope
 
 There is no daemon, filesystem watcher or PR/check integration. Refresh after
-changes made by other tools. Distribution targets are exactly macOS arm64 and
-Linux x86_64; Linux ARM, Intel Mac, Windows and package-manager installs are not
-supported. Native Linux and hosted trials remain pending; a cross-compile does
-not establish support.
+changes made by other tools. Distribution targets are macOS arm64 and Linux
+x86_64; Linux ARM, Intel Mac, Windows and package-manager installs are not
+supported.
 
 Automated tests cover temporary Git repositories/remotes, asynchronous state,
 settings, themes, keyboard interactions and offline updater fixtures. Live

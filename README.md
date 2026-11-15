@@ -25,86 +25,26 @@ of truth; Gitbuddy adds a view over it.
 
 ## Install
 
-**Candidate targets:** macOS on Apple Silicon (`darwin/arm64`) and Linux x86_64
-(`linux/amd64`, reported by `uname` as `x86_64`). Both require an interactive
-terminal and working Git. The Linux installer also needs Bash at
-`/bin/bash`, `curl`, and GNU `stat`, `sha256sum` and common
-utilities. The installed app needs no Go, Python or Node. Intel Macs, Linux ARM
-and Windows are not supported. Linux support is not yet released or natively
-verified; Ubuntu/GNU is the initial target, not a claim about musl, minimal
-distributions or kernel compatibility.
+For macOS on Apple Silicon and Linux x86_64. Requires a terminal and Git.
 
-> **Early prerelease:** the macOS binary is unsigned and not notarized. Gatekeeper
-> may block it. Do not disable
-> Gatekeeper or remove quarantine to make it run. Report a blocked installation
-> [as an issue](https://github.com/matthewmorek/gitbuddy/issues).
-
-### Install the historical macOS prerelease
-
-The historical [0.1.1-beta release](https://github.com/matthewmorek/gitbuddy/releases/tag/v0.1.1)
-uses tag `v0.1.1` and executable version `0.1.1`; `-beta` is its display title.
-Install it in one command:
-
-```sh
-curl -fsSL https://matthewmorek.github.io/gitbuddy/install.sh | sh -s -- --version 0.1.1
-```
-
-The installer shows download, verification and installation progress, then tells
-you how to launch Gitbuddy. It runs without prompts. `--version 0.1.1` explicitly
-selects the current prerelease; it is not treated as a stable release.
-This release has no Linux asset and must not be used to install on Linux.
-
-It installs to `~/.local/bin/gitbuddy`, verifying the binary's SHA-256 checksum
-and version before replacement. No `sudo`, shell-profile edits or preference
-changes. macOS supplies the shell tools; no package manager is needed.
-
-If `gitbuddy` is not on your `PATH`, add it for the current terminal:
-
-```sh
-export PATH="$HOME/.local/bin:$PATH"
-```
-
-To keep that setting, add the same line to your shell configuration, such as
-`~/.zshrc` for zsh. For another destination, pass an absolute
-`--install-dir`, then add that directory to `PATH` instead. See
-`sh install-gitbuddy.sh --help` for the installer options in the inspection
-alternative below. Flags in a pipe go after `sh -s --`, for example:
-
-```sh
-curl -fsSL https://matthewmorek.github.io/gitbuddy/install.sh | sh -s -- --version 0.1.1 --install-dir "$HOME/bin"
-```
-
-### Install a stable release
-
-When a stable release with an asset for your platform is available, omit the version pin:
+Install the latest stable release with the command below. It runs a downloaded
+script; you can [inspect it first](docs/USAGE.md#installation-options-and-security).
 
 ```sh
 curl -fsSL https://matthewmorek.github.io/gitbuddy/install.sh | sh
 ```
 
-This selects the latest **stable** release and refuses an implicit downgrade.
-The `0.1.2` candidate is not yet a released Linux-capable version. Drafts cannot
-be downloaded; prereleases are excluded from stable discovery. A prerelease may
-be installed with an explicit pin for testing, but does not enable in-app
-discovery.
-
-### Prefer to inspect the script?
-
-Piping to a shell executes code from the installer host. Only use a source you
-trust. Binary checksums detect corruption, not a compromised script or release
-host; the pipeline also cannot reliably report a failed `curl` in every shell.
-To check the download result and inspect the script before running it:
+Installs to `~/.local/bin` without `sudo`, shell-profile edits or preference
+changes. If `gitbuddy` is not found, add that directory to your current shell:
 
 ```sh
-curl -fsSL https://matthewmorek.github.io/gitbuddy/install.sh -o install-gitbuddy.sh
-# Stop if curl fails. Read the file before running the next command.
-less install-gitbuddy.sh
-sh install-gitbuddy.sh --version 0.1.1
+export PATH="$HOME/.local/bin:$PATH"
 ```
 
-The [versioned release installer](https://github.com/matthewmorek/gitbuddy/releases/download/v0.1.1/install.sh)
-is also available for reproducible, pinned use; the original `0.1.1` script must
-be saved to a file and run with `bash`, not streamed into `sh`.
+macOS binaries are unsigned and not notarized. If Gatekeeper blocks execution,
+do not disable it or remove quarantine; [report the issue](https://github.com/matthewmorek/gitbuddy/issues).
+See the [user guide](docs/USAGE.md#installation-options-and-security) for installer
+options and platform requirements.
 
 ## Use
 
@@ -115,10 +55,9 @@ gitbuddy
 gitbuddy /path/to/your/repository
 ```
 
-Repository subdirectories also work. Starting with the `0.1.2` candidate, history
-opens on the **current branch and its upstream**, including incoming commits;
-choose **Ctrl+P → All branches** for the wider view. The released `0.1.1` opens
-all branches by default. Start with **Ctrl+P** to explore commands and settings.
+Repository subdirectories also work. History opens on the **current branch and
+its upstream**, including incoming commits; choose **Ctrl+P → All branches** for
+the wider view. Start with **Ctrl+P** to explore commands and settings.
 
 | Key | Action |
 | --- | --- |
@@ -148,19 +87,8 @@ It never installs an update or restarts without your choice.
 2. Choose **Install update** and press Enter to install an available newer version.
 3. Choose **Restart** when ready, or use the new version on your next launch.
 
-Prereleases do not appear in these checks. To install a particular published
-version—including an intentional rollback—use the installer with
-`sh -s -- --version X.Y.Z`. Once stable releases exist, rerunning it without a pin updates
-to the latest stable version:
-
-```sh
-curl -fsSL https://matthewmorek.github.io/gitbuddy/install.sh | sh
-```
-
-Settings are preserved. Source builds, symlinked executables, root/system
-installations and installations with unsafe permissions cannot self-update; use the shell installer in a safe,
-user-owned directory. Set `GITBUDDY_NO_UPDATE_CHECK=1` to disable the automatic app
-check; manual checking and automatic Git fetching remain separate.
+Settings are preserved. See the [user guide](docs/USAGE.md#updates-and-shutdown)
+for advanced update options and restrictions.
 
 ## Uninstall
 
