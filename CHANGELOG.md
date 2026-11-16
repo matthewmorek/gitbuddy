@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.3.1] — 2026-11-16
+
+This release carries the Working copy features prepared for `0.3.0`, whose build
+failed before release assets or a draft were created. No `0.3.0` download was
+published; its tag is retained unchanged.
+
+- Switch between **History** and **Working copy** with `1` / `2`, and browse
+  read-only staged, unstaged and untracked diffs. Use `Tab` to move between panes.
+- See compact per-file statuses and line counts, chunk summaries and two-space
+  tabs in diffs, with consistent refresh timestamps and a stable repository header.
+- Bound working-copy reads and safely cancel them when leaving the view or quitting.
+  Staging, hunk editing and an automatic working-copy watcher are not included.
+- Correct terminal smoke-test navigation to select the intended mixed-change file
+  even when standalone runtime-isolation fixtures add extra untracked files.
+
+macOS arm64 and Linux x86_64 remain the distribution targets. The macOS build
+remains unsigned and not notarized; existing settings are preserved.
+
 ## [0.3.0] — 2026-11-16
 
 - Switch between **History** and **Working copy** with `1` / `2`, and use `Tab`

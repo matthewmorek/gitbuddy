@@ -194,7 +194,16 @@ def exercise(root, repo, width, mode, executable, isolated):
         assert b"HORIZONTAL-END" in output[working_start:], "Long-line tail unreachable"
         send(b"\x1b", 0.2)  # Back to the file list.
         mixed_start = len(output)
-        send(b"j", 0.3)
+        # Match path-sorted rows, including the standalone preload sentinels.
+        working_paths = sorted(
+            row[3:]
+            for row in git(
+                repo, "status", "--porcelain=v1", "-z", "--untracked-files=all"
+            ).stdout.split(b"\0")
+            if row
+        )
+        steps = working_paths.index(b"file.txt") - working_paths.index(b"a-preview.txt")
+        send(b"j" * steps, 0.3)
         send(b"\t" if width >= 100 else b"\r", 0.3)
         send(b"\x1b[6~", 0.3)
         mixed = output[mixed_start:]
