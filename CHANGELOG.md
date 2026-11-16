@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.3.0] — 2026-11-16
+
+- Switch between **History** and **Working copy** with `1` / `2`, and use `Tab`
+  to move between panes.
+- Browse read-only staged, unstaged and untracked diffs in Working copy.
+  No staging, hunk editing or automatic working-copy watcher is included.
+- Share compact per-file statuses and line counts across both views, add chunk
+  summaries, and display tabs as two spaces in diffs.
+- Unify ready, refresh and fetch timestamps, and keep the repository header
+  stable across worktrees.
+- Bound working-copy reads and safely cancel them when leaving the view or quitting.
+- Use only the matching `vX.Y.Z` tag as the release title, without an app prefix.
+
+macOS arm64 and Linux x86_64 remain the distribution targets. The macOS build
+remains unsigned and not notarized; existing settings are preserved.
+
 ## [0.2.1] — patch candidate
 
 - Keep changed files and their statistics on one detail row, shortening long paths

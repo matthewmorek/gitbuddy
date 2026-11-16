@@ -381,7 +381,11 @@ have not been performed.
 Use SemVer. Before 1.0, patches are compatible fixes; minors introduce features or
 documented breaking changes. Add a `## [X.Y.Z]` changelog section and update
 `internal/buildinfo/version.txt` together. Keep development prereleases distinct from stable candidates;
-`--release` rejects them. Repeat **tag → verified draft → publish** for each
+`--release` rejects them. New release display titles must be exactly the matching
+`vX.Y.Z` tag (for example, `v0.3.0`), with no app prefix or other suffix. The workflow
+uses `RELEASE_TAG` as the title; retain that title when publishing or promoting a
+draft. Historical release titles and the first-release trial above are unchanged.
+Repeat **tag → verified draft → publish** for each
 immutable version, retaining the prerelease trial when needed. Publishing a
 stable release as **latest** makes it available to the installer's default update
 path; creating a tag or draft alone does not.

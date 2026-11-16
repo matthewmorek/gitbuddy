@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 )
@@ -30,6 +31,11 @@ type Status struct {
 	Branch, Head, Upstream, Operation string
 	Dirty                             bool
 	Remotes, FetchWarnings            []string
+	// Entries coalesces by current raw path. Dirty remains conservative even
+	// for unknown porcelain records that cannot produce a selectable entry.
+	Entries []WorkingCopyEntry
+	// StatsWarning retains a usable listing when ancillary batched counts fail.
+	StatsWarning string
 }
 
 // CommitRelation compares ancestry only with the attached branch's upstream.
@@ -89,15 +95,17 @@ type Details struct {
 // empty strings. Returned repository text is raw: use Safe only for presentation.
 type Repo interface {
 	Root() string
+	DisplayName() string
 	Status(context.Context) (Status, error)
 	Snapshot(context.Context, Scope) (Snapshot, error)
 	History(context.Context, Snapshot, int, int) ([]Commit, error)
 	Details(context.Context, string) (Details, error)
+	WorkingCopyDetails(context.Context, string) (WorkingCopyDetails, error)
 	Fetch(context.Context) error
 	Pull(context.Context, PullMode) error
 }
 
-type Repository struct{ root string }
+type Repository struct{ root, displayName string }
 
 var _ Repo = (*Repository)(nil)
 
@@ -126,10 +134,37 @@ func Open(ctx context.Context, path string) (*Repository, error) {
 		return nil, err
 	}
 	r.root = strings.TrimSuffix(root, "\n") // A pathname itself may end in LF.
+	identity, err := r.git(ctx, "", "worktree", "list", "--porcelain", "-z")
+	if err != nil && ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
+	r.displayName = repositoryDisplayName(identity, r.root)
 	return r, nil
 }
 
 func (r *Repository) Root() string { return r.root }
+
+// DisplayName identifies the repository's main worktree, not this checkout.
+// Git lists the main worktree first, including a bare main repository. No remote
+// URLs or network access are used; Root remains the current working tree.
+func (r *Repository) DisplayName() string { return r.displayName }
+
+func repositoryDisplayName(porcelain, fallback string) string {
+	path := fallback
+	main, _, _ := strings.Cut(porcelain, "\x00\x00")
+	record, _, complete := strings.Cut(porcelain, "\x00")
+	if complete && strings.HasPrefix(record, "worktree ") && len(record) > len("worktree ") {
+		path = strings.TrimPrefix(record, "worktree ")
+	}
+	name := filepath.Base(filepath.Clean(path))
+	if strings.Contains(main, "\x00bare\x00") || strings.HasSuffix(main, "\x00bare") {
+		name = strings.TrimSuffix(name, ".git")
+	}
+	if name == "" || name == "." || name == string(filepath.Separator) {
+		return "repository"
+	}
+	return name
+}
 
 func (r *Repository) git(ctx context.Context, input string, args ...string) (string, error) {
 	out, code, err := execute(ctx, r.root, nil, input, args...)
@@ -158,6 +193,7 @@ func parseStatus(out string) (Status, error) {
 	if err != nil {
 		return s, err
 	}
+	byPath := make(map[string]int)
 	for i := 0; i < len(records); i++ {
 		record := records[i]
 		switch {
@@ -175,15 +211,45 @@ func parseStatus(out string) (Status, error) {
 			s.Upstream = strings.TrimPrefix(record, "# branch.upstream ")
 		case !strings.HasPrefix(record, "# "):
 			s.Dirty = true
+			oldPath := ""
 			if strings.HasPrefix(record, "2 ") {
 				i++ // Porcelain v2 renames include a separate raw old pathname.
 				if i == len(records) {
 					return s, errors.New("Git returned an incomplete status rename record.")
 				}
+				oldPath = records[i]
+			}
+			entry, known, err := parseWorkingCopyEntry(record, oldPath)
+			if err != nil {
+				return s, err
+			}
+			if !known {
+				continue // Unknown records must still block pull.
+			}
+			if at, exists := byPath[entry.Path]; exists {
+				// Git can emit a staged deletion and a recreated untracked
+				// file at the same path. Keep both on one selectable row.
+				if entry.Untracked {
+					s.Entries[at].Untracked = true
+				} else {
+					entry.Untracked = entry.Untracked || s.Entries[at].Untracked
+					s.Entries[at] = entry
+				}
+			} else {
+				byPath[entry.Path] = len(s.Entries)
+				s.Entries = append(s.Entries, entry)
 			}
 		}
 	}
 	return s, nil
+}
+
+func (r *Repository) workingCopyStatus(ctx context.Context) (Status, error) {
+	out, err := r.git(ctx, "", "status", "--porcelain=v2", "--branch", "-z", "--untracked-files=all", "--ignore-submodules=none")
+	if err != nil {
+		return Status{}, err
+	}
+	return parseStatus(out)
 }
 
 func (r *Repository) operation(ctx context.Context) (string, error) {
@@ -208,11 +274,7 @@ func (r *Repository) operation(ctx context.Context) (string, error) {
 }
 
 func (r *Repository) Status(ctx context.Context) (Status, error) {
-	out, err := r.git(ctx, "", "status", "--porcelain=v2", "--branch", "-z", "--untracked-files=all")
-	if err != nil {
-		return Status{}, err
-	}
-	s, err := parseStatus(out)
+	s, err := r.workingCopyStatus(ctx)
 	if err != nil {
 		return s, err
 	}
@@ -238,6 +300,9 @@ func (r *Repository) Status(ctx context.Context) (Status, error) {
 		if !standard || negative {
 			s.FetchWarnings = append(s.FetchWarnings, remote.name+": narrow or custom fetch mapping; Fetch all uses existing refspecs, not necessarily every remote branch.")
 		}
+	}
+	if err := r.workingCopyStats(ctx, &s); err != nil {
+		return s, err
 	}
 	return s, nil
 }

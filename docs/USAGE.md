@@ -5,12 +5,16 @@ and contributions, start with the [README](../README.md).
 
 ## Header and commit rows
 
-The header's left section shows **Gitbuddy / repository**. Its right section
+The header's left section shows **Gitbuddy / repository**, using Git's main
+worktree identity so linked checkouts share a stable name. It does not use remote
+URLs or change which checkout is read. Its right section
 shows the current branch in the accent color, followed by green `↑ahead ↓behind`
 counts against its configured upstream. Counts cover the full frozen comparison,
 not just the loaded rows. The branch identity and counts refresh together with
 repository history, including after an external checkout. Without an
 available upstream, `↑— ↓—` means unavailable rather than zero.
+In Working copy, branch identity comes from live status. Comparison counts are
+unavailable until the history snapshot matches that branch and HEAD.
 
 Each commit uses two rows:
 
@@ -32,10 +36,14 @@ History defaults to the **current branch and its configured upstream**, includin
 fetched commits not yet merged locally (HEAD only when detached or without an
 available upstream). Use **Ctrl+P → All branches** to include other local branches,
 remote-tracking branches, tags and HEAD, excluding stash/reflog entries.
-The padded **all / current** buttons above the list also switch scope with a
-left click; the palette remains the keyboard route. The requested scope is
-highlighted while it loads. Fetch activity and the last successful fetch time
-appear at the opposite end of this list header.
+The padded **History / Working copy** buttons above the list switch modes with
+a left click; **1 / 2** and palette commands do the same. History scope
+(**Current branch / All branches**) is selected and marked in the palette, not
+repeated in the list header. Scope commands always return to History.
+Fetching/refreshing activity appears once at the opposite end of this header,
+or in the footer when the list is hidden or space is tight. A successful refresh
+shows **Ready · just now**, then a relative age such as **2 mins ago**. Failed
+refreshes do not advance that timestamp or mark retained content ready.
 
 Details start with the short SHA and subject, then the Git author and relative
 age, message body and changed files. File statuses and added/deleted line counts
@@ -44,6 +52,7 @@ rather than implying zero changed lines. Renames retain both paths. Full commit
 metadata, absolute dates, parents and the comparison follow the files. Merge
 files are compared with the **first parent**; root commits list added files.
 There is no branch graph or full patch viewer.
+Working-copy patches are separate from commit details.
 
 Incoming commits—reachable from the current branch's upstream but not from
 HEAD—use dimmed text. If both sides contain commits absent from the other,
@@ -78,14 +87,79 @@ replace the Git operation status. Only detail reads lasting over 150 ms
 show a spinner in the details pane. On a narrow terminal showing only details,
 ongoing Git operations and a pending quit remain visible in the footer.
 
+## Working copy
+
+**2**, the **Working copy** button or its palette command opens changed files,
+sorted by repository-relative raw path. Each file uses one row, with two fixed
+status positions followed by its path (both paths for a rename), and right-aligned
+`+added -deleted` counts or `binary`. The first position is staged/index status,
+the second unstaged/worktree status; unchanged positions are blank. For example,
+` M` is an unstaged modification, `A ` a staged new file, `MM` mixed edits and
+` ?` a truly untracked file. `D?` retains a staged deletion beside a recreated
+untracked file. Conflicts retain Git's two unmerged status codes.
+Modified statuses are blue, additions green and deletions red; tracked paths
+remain normal text. Purely untracked rows, including counts, are muted gray.
+Ignored files are excluded. The details show full paths without wrapping.
+
+Tracked counts come from batched staged and unstaged comparisons, summed rather
+than netted against HEAD. Zero counts are omitted. Untracked counting uses the
+same safe preview reader, with a **2 MiB** per-file cap and **8 MiB** aggregate
+refresh budget. Missing, oversized, conflicted or unsupported counts say
+`unavailable`, never zero. A count-read failure preserves the file list.
+
+Select a file to read its live contents:
+
+- **Unstaged:** index → working tree.
+- **Staged:** HEAD → index (also works before the first commit).
+- **Untracked:** a new-file preview, not a diff against HEAD. Empty files,
+  executable modes and symlink target metadata are identified explicitly.
+
+Mixed changes show Unstaged before Staged, even when the worktree reverses a
+staged edit. Git's unified patches include three context lines, rename/mode
+metadata and no-final-newline markers. Binary files show a notice, not payloads.
+The file summary counts chunks, insertions and deletions across the rendered
+comparisons, excluding patch headers. A nonempty untracked preview is one chunk;
+an empty preview is zero. Binary/unsupported/oversized content has no fabricated
+numeric summary. Actual tabs display as **two spaces**, while literal `\t` source
+text stays literal; other terminal controls are escaped. No editor configuration
+is read for tab width.
+Conflicts explain that multi-way diffs are unsupported; submodules show status
+and gitlink summaries, not recursive file browsing.
+
+**Tab / Shift+Tab** switch panes in either mode. With file details focused,
+**↑ / ↓**, **k / j** and **Page Up / Page Down** scroll vertically; **← / →**
+scroll long lines horizontally. Below 100 columns, **Enter** opens details and
+**Escape** returns to the file list. Mode changes focus the list and restore
+that mode's selection and scroll; selecting the active mode does nothing.
+Dialogs consume these keys while open.
+
+Entering Working copy, **r** / **Refresh local repository**, and fetch/pull
+completion refresh local status and reread the selected file. There is no
+watcher. Selection follows the raw path; if it disappears, the nearest remaining
+file is selected, or the clean state replaces the old patch. Unchanged content
+retains detail offsets; changed content or a new file starts at the top.
+Background history refreshes do not reset working-copy selection or pane focus.
+
+Reads are live, not atomic filesystem snapshots. Loading and refreshing states
+mark any retained content; failed refreshes mark it stale and offer **r** to
+retry. A missing or changing file reports unavailable rather than presenting
+an old patch as fresh. Total selected-file text is limited to **2 MiB**; oversized
+comparisons require external inspection, without a misleading partial patch.
+Untracked previews read only contained regular files or symlink metadata, never
+external symlink targets or special-file contents.
+
+This browser is read-only: no checkboxes, Space staging, hunk actions, editing,
+discarding, committing or conflict resolution. Existing explicit fetch/pull
+commands retain their separate effects and safety checks.
+
 ## Fetch and pull safety
 
 Automatic fetching defaults to **every five minutes while Gitbuddy is open**,
 with an initial fetch after local history renders. Disable it or change the
 interval in **Ctrl+P → Settings**. Fetch failures show a temporary notification;
-use **Show errors and warnings** for the complete saved message. The last
-successful fetch time does not advance on failure. Manual refresh reads local
-state without fetching.
+use **Show errors and warnings** for the complete saved message. Refresh-ready
+times describe successfully loaded local data, not remote freshness. Manual
+refresh reads local state without fetching.
 
 Fetch uses the repository's existing remotes and branch mappings. `--all` means
 eligible remotes—not necessarily all branches in a single-branch clone.

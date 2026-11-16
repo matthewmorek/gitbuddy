@@ -2,7 +2,6 @@ package ui
 
 import (
 	"fmt"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -33,7 +32,8 @@ func line(text string, width int, fg, bg string, bold bool) string {
 	text = strings.NewReplacer("\x1b[m", "\x1b[m"+prefix, "\x1b[0m", "\x1b[0m"+prefix).Replace(text)
 	return prefix + text + strings.Repeat(" ", max(0, width-ansi.StringWidth(text))) + ansi.ResetStyle
 }
-func safeLine(text string) string { return strings.ReplaceAll(gitrepo.Safe(text), "\n", "↵") }
+func safeText(text string) string { return gitrepo.Safe(strings.ReplaceAll(text, "\t", "  ")) }
+func safeLine(text string) string { return strings.ReplaceAll(safeText(text), "\n", "↵") }
 
 // All widths are terminal cells, including any already-colored text fragments.
 // The right field is bounded so long authors/refs cannot consume the whole row.
@@ -63,9 +63,13 @@ func (m *Model) semanticColor(c palette.Colors, dark, light string) string {
 func (m *Model) header(c palette.Colors) string {
 	width := max(0, m.contentWidth()-2*horizontalPadding)
 	branch := m.snapshot.Branch
+	head := m.snapshot.Head
+	if m.mode == workingCopyMode {
+		branch, head = m.status.Branch, m.status.Head
+	}
 	if branch == "" {
 		branch = "detached HEAD"
-		if m.snapshot.Head == "" {
+		if head == "" {
 			branch = "unborn branch"
 			if m.loading {
 				branch = "…"
@@ -73,7 +77,9 @@ func (m *Model) header(c palette.Colors) string {
 		}
 	}
 	counts, countsColor := "↑— ↓—", c.Muted
-	if comparison := m.snapshot.Comparison; comparison != nil {
+	matching := m.mode == historyMode || m.statusFailure == "" && !m.statusLoading &&
+		m.status.Head == m.snapshot.Head && m.status.Branch == m.snapshot.Branch
+	if comparison := m.snapshot.Comparison; comparison != nil && matching {
 		counts = fmt.Sprintf("↑%d ↓%d", comparison.Ahead, comparison.Behind)
 		countsColor = m.semanticColor(c, "#4ade80", "#15803d")
 	}
@@ -89,7 +95,7 @@ func (m *Model) header(c palette.Colors) string {
 	} else {
 		trailing = line(ansi.Truncate(counts, rightLimit, "…"), rightLimit, countsColor, c.Background, false)
 	}
-	leading := "Gitbuddy / " + safeLine(filepath.Base(m.repo.Root()))
+	leading := "Gitbuddy / " + safeLine(m.repo.DisplayName())
 	return line("", horizontalPadding, c.Text, c.Background, false) +
 		columns(leading, trailing, width, rightLimit, c.Text, c.Text, c.Background) +
 		line("", horizontalPadding, c.Text, c.Background, false)
@@ -180,9 +186,6 @@ func (m *Model) historyVisible() bool {
 	return m.width >= 100 || m.focus == "history"
 }
 func (m *Model) footerStatus() bool {
-	if m.activity() == "" && !m.closing {
-		return false
-	}
 	width := m.contentWidth()
 	if m.width >= 100 {
 		width /= 2
@@ -201,9 +204,11 @@ func (m *Model) footerHeight() int {
 }
 
 // Outer vertical padding, a header, and a separator above and below the panes.
-func (m *Model) paneHeight() int  { return max(1, m.height-5-m.footerHeight()) }
-func (m *Model) visibleRows() int { return max(1, (m.paneHeight()-4)/2) }
+func (m *Model) paneHeight() int      { return max(1, m.height-5-m.footerHeight()) }
+func (m *Model) visibleRows() int     { return max(1, (m.paneHeight()-4)/2) }
+func (m *Model) visibleFileRows() int { return max(1, m.paneHeight()-4) }
 func (m *Model) ensureVisible() {
+	m.ensureFileVisible()
 	for i, row := range m.rows {
 		if row.SHA == m.selected {
 			if i < m.top {
@@ -240,7 +245,7 @@ func (m *Model) detailContent(c palette.Colors, bg string) []string {
 	width := max(1, m.paneWidth()-2*horizontalPadding)
 	var rows []string
 	wrap := func(text string) {
-		rows = append(rows, strings.Split(ansi.Wrap(gitrepo.Safe(text), width, ""), "\n")...)
+		rows = append(rows, strings.Split(ansi.Wrap(safeText(text), width, ""), "\n")...)
 	}
 	subject, body, _ := strings.Cut(strings.TrimRight(d.Message, "\n"), "\n")
 	sha := d.SHA[:min(8, len(d.SHA))]
@@ -251,52 +256,9 @@ func (m *Model) detailContent(c palette.Colors, bg string) []string {
 		wrap(body)
 		rows = append(rows, "")
 	}
-	green := m.semanticColor(c, "#4ade80", "#15803d")
-	red := errorColor(c)
 	for _, file := range d.Files {
-		statusColor := c.Muted
-		switch {
-		case strings.HasPrefix(file.Status, "A"):
-			statusColor = green
-		case strings.HasPrefix(file.Status, "D"):
-			statusColor = red
-		case strings.HasPrefix(file.Status, "M"):
-			statusColor = m.semanticColor(c, "#fbbf24", "#a16207")
-		case strings.HasPrefix(file.Status, "R"), strings.HasPrefix(file.Status, "C"):
-			statusColor = c.Accent
-		}
-		counts := ""
-		if file.Binary {
-			counts = "binary"
-		} else {
-			if file.Added > 0 {
-				text := fmt.Sprintf("+%d", file.Added)
-				counts = line(text, len(text), green, bg, false)
-			}
-			if file.Deleted > 0 {
-				if counts != "" {
-					counts += " "
-				}
-				text := fmt.Sprintf("-%d", file.Deleted)
-				counts += line(text, len(text), red, bg, false)
-			}
-		}
-		// Reserve status and counts before shortening paths. Where space permits,
-		// keep a path cell; on tiny panes counts may need truncation themselves.
-		status := safeLine(file.Status)
-		statusWidth := min(width, ansi.StringWidth(status))
-		statusGap := min(horizontalPadding, width-statusWidth)
-		remaining := width - statusWidth - statusGap
-		countWidth := min(ansi.StringWidth(counts), max(0, remaining-1-horizontalPadding))
-		countGap := 0
-		if countWidth > 0 {
-			countGap = horizontalPadding
-		}
-		pathWidth := remaining - countWidth - countGap
-		name := changedFileName(file.Path, file.OldPath, pathWidth)
-		rows = append(rows, line(status, statusWidth, statusColor, bg, false)+
-			line("", statusGap, c.Text, bg, false)+line(name, pathWidth, c.Text, bg, false)+
-			line("", countGap, c.Text, bg, false)+line(counts, countWidth, c.Muted, bg, false))
+		rows = append(rows, m.renderFileRow(fileRow{path: file.Path, oldPath: file.OldPath, index: file.Status,
+			stats: gitrepo.LineStats{Known: true, Added: file.Added, Deleted: file.Deleted, Binary: file.Binary}}, width, c, bg))
 	}
 	rows = append(rows, "")
 	wrap(fmt.Sprintf("%s\nAuthor: %s <%s>\nAuthored: %s\nCommitter: %s <%s>\nCommitted: %s\nParents: %s\n\n%s", d.SHA, d.Author, d.AuthorEmail, d.AuthoredAt, d.Committer, d.CommitterEmail, d.CommittedAt, strings.Join(d.Parents, " "), d.Comparison))
@@ -387,41 +349,52 @@ func (m *Model) paneBackground(kind string, c palette.Colors) string {
 	return bg
 }
 
-type scopeSegment struct {
-	scope      gitrepo.Scope
+type modeSegment struct {
+	mode       viewMode
 	start, end int
 	label      string
 }
 
 // The same terminal-cell allocation drives rendering and pointer hit testing.
-func (m *Model) scopeSegments() []scopeSegment {
+func (m *Model) modeSegments() []modeSegment {
 	width := m.contentWidth()
 	if m.width >= 100 {
 		width /= 2
 	}
 	inner := max(0, width-2*horizontalPadding)
-	all := min(5, (inner+1)/2)
-	if inner >= 14 {
-		all = 5
+	history := min(9, (inner+1)/2)
+	if inner >= 23 {
+		history = 9
 	}
-	current := min(9, inner-all)
-	return []scopeSegment{{gitrepo.All, 0, all, " all "}, {gitrepo.Current, all, all + current, " current "}}
+	working := min(14, inner-history)
+	return []modeSegment{{historyMode, 0, history, " History "}, {workingCopyMode, history, history + working, " Working copy "}}
 }
 
 func (m *Model) historyStatusWidth(width int) int {
-	for _, segment := range m.scopeSegments() {
+	for _, segment := range m.modeSegments() {
 		width -= segment.end - segment.start
 	}
-	return max(0, width-1) // Leave a gap after the scope buttons.
+	return max(0, width-1) // Leave a gap after the mode buttons.
 }
 
 func (m *Model) fetchStatus(c palette.Colors) string {
-	status := "Not fetched this session"
-	if len(m.status.Remotes) == 0 {
-		status = "No remotes configured"
+	stamp, failure := m.historyRefreshed, m.historyFailure
+	if m.mode == workingCopyMode {
+		stamp, failure = m.statusRefreshed, m.statusFailure
+		if failure == "" {
+			failure = m.status.StatsWarning
+		}
+		if failure == "" && (m.working.failure != "" || m.working.stale ||
+			m.working.details != nil && m.working.details.Outcome != gitrepo.WorkingCopyReady) {
+			failure = "Selected file unavailable · r Retry"
+		}
 	}
-	if !m.lastFetch.IsZero() {
-		status = "Fetched " + m.lastFetch.Format("15:04:05")
+	status := "Not refreshed"
+	if !stamp.IsZero() {
+		status = "Ready · " + relativeTime(stamp.Format(time.RFC3339), m.now)
+	}
+	if failure != "" {
+		status = "Refresh incomplete · r Retry"
 	}
 	if m.fetchFailed {
 		status += " · last fetch failed"
@@ -436,21 +409,26 @@ func (m *Model) fetchStatus(c palette.Colors) string {
 }
 
 func (m *Model) historyHeader(width int, c palette.Colors, bg string) string {
-	active := m.activeScope()
 	var buttons string
-	for _, segment := range m.scopeSegments() {
+	for _, segment := range m.modeSegments() {
 		fg, surface := c.Muted, c.Background
-		if segment.scope == active {
+		if segment.mode == m.mode {
 			fg, surface = c.Text, c.Selection
 		}
-		buttons += line(segment.label, segment.end-segment.start, fg, surface, segment.scope == active)
+		buttons += line(segment.label, segment.end-segment.start, fg, surface, segment.mode == m.mode)
 	}
 	remaining := max(0, width-ansi.StringWidth(buttons))
-	status := ansi.Truncate(m.fetchStatus(c), m.historyStatusWidth(width), "…")
+	status := ""
+	if !m.footerStatus() {
+		status = ansi.Truncate(m.fetchStatus(c), m.historyStatusWidth(width), "…")
+	}
 	return buttons + line("", remaining-ansi.StringWidth(status), c.Text, bg, false) + line(status, ansi.StringWidth(status), c.Muted, bg, false)
 }
 
 func (m *Model) pane(kind string, width, height int, c palette.Colors) string {
+	if m.mode == workingCopyMode {
+		return m.workingCopyPane(kind, width, height, c)
+	}
 	bg := m.paneBackground(kind, c)
 	inner := max(0, width-2*horizontalPadding)
 	rows := []string{line("", width, c.Text, bg, false)}
@@ -459,7 +437,11 @@ func (m *Model) pane(kind string, width, height int, c palette.Colors) string {
 	}
 	if kind == "history" {
 		add(m.historyHeader(inner, c, bg), false)
-		add("", false)
+		state := ""
+		if m.historyFailure != "" {
+			state = "History unavailable · retained data stale · r Retry"
+		}
+		add(state, false)
 		if len(m.rows) == 0 && !m.loading {
 			add("No commits in this view", false)
 		}
@@ -567,7 +549,13 @@ func (m *Model) baseView(c palette.Colors) string {
 	if hotkeyBackground == c.Background {
 		hotkeyBackground = c.Active
 	}
-	footer = append(footer, padded("↑↓ Navigate   Tab Pane   Ctrl+P Commands   q Quit", c.Muted, hotkeyBackground))
+	hints := "↑↓ Navigate   Tab Pane   1/2 View   Ctrl+P Commands   q Quit"
+	if m.mode == workingCopyMode && m.focus == "details" {
+		hints = "↑↓ Scroll   ←→ Pan   Tab List   Esc Back   Ctrl+P Commands"
+	} else if m.width < 100 && m.focus == "history" {
+		hints = "↑↓ Navigate   Enter Details   1/2 View   Ctrl+P Commands"
+	}
+	footer = append(footer, padded(hints, c.Muted, hotkeyBackground))
 	separator := line("", w, c.Text, c.Background, false)
 	return lipgloss.NewStyle().Background(lipgloss.Color(c.Background)).Padding(1, horizontalPadding).Width(m.width).Height(m.height).MaxWidth(m.width).MaxHeight(m.height).Render(header + "\n" + separator + "\n" + panes + "\n" + separator + "\n" + strings.Join(footer, "\n"))
 }
@@ -611,7 +599,7 @@ func (m *Model) footerNoticeLines() []string {
 	if len(parts) == 0 {
 		return nil
 	}
-	lines := strings.Split(ansi.Wrap(gitrepo.Safe(strings.Join(parts, "\n")), messageWidth(m.contentWidth()), ""), "\n")
+	lines := strings.Split(ansi.Wrap(safeText(strings.Join(parts, "\n")), messageWidth(m.contentWidth()), ""), "\n")
 	// Leave room for a complete commit row on compact terminals. Full diagnostics
 	// remain scrollable in the errors dialog instead of swallowing the history.
 	limit := max(1, min(4, m.height-15))
@@ -632,7 +620,7 @@ func (m *Model) footerNoticeLines() []string {
 
 // Rendering and keyboard scrolling share the same wrapped diagnostic lines.
 func (m *Model) errorLines() []string {
-	text := gitrepo.Safe(m.warnings())
+	text := safeText(m.warnings())
 	if text == "" {
 		text = "No errors or warnings"
 	}
@@ -684,7 +672,7 @@ func (m *Model) dialogView(c palette.Colors, width, height int) string {
 			hint := "↑↓ Navigate · Enter Select · Esc Close"
 			hintRows := []string{line(hint, inner, c.Text, c.Panel, false)}
 			if len(options) > 0 && options[choice].disabled != "" {
-				lines := strings.Split(ansi.Wrap(gitrepo.Safe(options[choice].disabled), messageWidth(inner), ""), "\n")
+				lines := strings.Split(ansi.Wrap(safeText(options[choice].disabled), messageWidth(inner), ""), "\n")
 				lines = lines[:min(len(lines), max(1, min(4, height-9)))]
 				hintRows = messageRows(lines, inner, c, c.Panel, errorColor(c))
 			}

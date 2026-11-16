@@ -166,6 +166,7 @@ func TestDiscoveryAndAmbientRepositoryIsolation(t *testing.T) {
 	t.Setenv("GIT_OBJECT_DIRECTORY", filepath.Join(other, ".git", "objects"))
 	r := openRepo(t, sub)
 	equal(t, r.Root(), path)
+	equal(t, r.DisplayName(), "repo with spaces\n")
 	equal(t, statusOf(t, r), Status{Branch: "main", Remotes: []string{}, FetchWarnings: []string{}})
 	history, err := r.History(testContext, snapshotOf(t, r, All), 0, 200)
 	mustOK(t, err)
@@ -178,6 +179,31 @@ func TestDiscoveryAndAmbientRepositoryIsolation(t *testing.T) {
 	wantError(t, err, "Bare repositories")
 	_, err = Open(testContext, filepath.Join(path, ".git"))
 	wantError(t, err, "metadata directory")
+}
+
+func TestRepositoryDisplayNameUsesMainIdentityWithoutRemotes(t *testing.T) {
+	f := newFixture(t)
+	path := f.repo("project", false)
+	r := openRepo(t, path)
+	equal(t, r.DisplayName(), "project")
+	equal(t, len(statusOf(t, r).Remotes), 0)
+	// Git advertises the separate main gitdir as its main identity. Use that
+	// stable name rather than guessing from a linked checkout's folder.
+	separate := filepath.Join(f.root, "checkout")
+	mustOK(t, os.Mkdir(separate, 0700))
+	f.git(separate, "init", "--initial-branch=main", "--separate-git-dir="+filepath.Join(f.root, "metadata"))
+	equal(t, openRepo(t, separate).DisplayName(), "metadata")
+	// Synthetic raw Git identity records exercise linked and bare-main layouts
+	// without creating, deleting or managing any worktree.
+	for _, tc := range []struct{ identity, root, want string }{
+		{"worktree /main/project\x00HEAD abc\x00branch refs/heads/main\x00\x00worktree /linked/feature\x00HEAD def\x00\x00", "/linked/feature", "project"},
+		{"worktree /main/project.git\x00bare\x00\x00worktree /linked/feature\x00HEAD def\x00\x00", "/linked/feature", "project"},
+		{"worktree /main/raw\n\tname\x00HEAD abc\x00\x00", "/linked/feature", "raw\n\tname"},
+		{"", "/fallback/checkout", "checkout"},
+		{"worktree incomplete", "/fallback/checkout", "checkout"},
+	} {
+		equal(t, repositoryDisplayName(tc.identity, tc.root), tc.want)
+	}
 }
 
 func TestFrozenHistoryAndTagPeeling(t *testing.T) {

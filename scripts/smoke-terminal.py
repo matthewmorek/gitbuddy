@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import pty
+import re
 import select
 import shlex
 import shutil
@@ -154,9 +155,61 @@ def exercise(root, repo, width, mode, executable, isolated):
         assert any(frame.encode() in output for frame in "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"), (
             "Loading spinner did not render"
         )
-        assert b"current" in output and b"Commit 1200" in output, (
+        assert b"History" in output and b"Commit 1200" in output, (
             "Initial history did not render"
         )
+        assert b"Current branch" not in output and b"All branches" not in output, (
+            "History scope must stay in the palette, not the list header"
+        )
+        assert b"Gitbuddy / fixture" in output, "Repository identity missing"
+        assert "Ready · just now".encode() in output, (
+            "Successful refresh lacks ready age"
+        )
+        working_start = len(output)
+        send(b"2", 0.8)
+        assert b"a-preview.txt" in output[working_start:], "Working-copy list missing"
+        working_rows = re.sub(rb"\x1b\[[0-?]*[ -/]*[@-~]", b"", output[working_start:])
+        # The terminal renderer may encode padding as cursor movement, removed
+        # with the ANSI sequences above rather than becoming literal spaces.
+        assert re.search(rb"\? a-preview\.txt *\+2", working_rows), (
+            "Untracked row lacks actual line counts"
+        )
+        assert re.search(rb"MM file\.txt *\+2 -2", working_rows), (
+            "Unselected mixed row lacks summed counts or both status positions"
+        )
+        send(b"\t" if width >= 100 else b"\r", 0.3)
+        assert b"UNTRACKED-PREVIEW" in output[working_start:], (
+            "Untracked preview missing"
+        )
+        assert b"Untracked" in output[working_start:], (
+            "Preview must be labeled untracked"
+        )
+        assert b"1 chunk, 2 insertions, 0 deletions" in output[working_start:], (
+            "Untracked preview lacks its chunk/line summary"
+        )
+        assert rb"UNTRACKED-PREVIEW  literal\t" in output[working_start:], (
+            "Actual tab was not expanded to two spaces or literal backslash-t changed"
+        )
+        send(b"\x1b[C" * 35, 0.3)
+        assert b"HORIZONTAL-END" in output[working_start:], "Long-line tail unreachable"
+        send(b"\x1b", 0.2)  # Back to the file list.
+        mixed_start = len(output)
+        send(b"j", 0.3)
+        send(b"\t" if width >= 100 else b"\r", 0.3)
+        send(b"\x1b[6~", 0.3)
+        mixed = output[mixed_start:]
+        assert b"Unstaged" in mixed and b"Staged" in mixed, "Mixed comparisons missing"
+        assert b"2 chunks, 2 insertions, 2 deletions" in mixed, (
+            "Mixed summary must include both comparisons, not patch headers"
+        )
+        assert b"Unstaged modified" not in mixed and b"Staged modified" not in mixed, (
+            "Redundant file status prose remains in details"
+        )
+        assert b"+unstaged edit" in mixed and b"+staged edit" in mixed, (
+            "Both mixed patch bodies must be reachable"
+        )
+        send(b"r", 0.8)
+        send(b"1", 0.3)
         send(b"\x10")  # Ctrl+P
         assert b"Commands" in output, "Command palette did not render"
         send(b"settings theme")
@@ -207,7 +260,7 @@ def exercise(root, repo, width, mode, executable, isolated):
             "Runtime error in PTY"
         )
         print(
-            f"PASS {'binary (no Go/Bun/Node)' if isolated else 'source'} PTY {width}x32, {mode}, 1200 commits: loading/palette/theme/update eligibility/plain Escape/paging/quit/restoration"
+            f"PASS {'binary (no Go/Bun/Node)' if isolated else 'source'} PTY {width}x32, {mode}, 1200 commits: loading/ready/repository-name/single-file-rows/all-row-counts/two-space-tabs/summaries/long-line/mixed-diffs/palette/theme/update eligibility/plain Escape/paging/quit/restoration"
         )
     finally:
         evidence = PROJECT / ".verification"
@@ -242,6 +295,14 @@ with tempfile.TemporaryDirectory(prefix="gitbuddy-pty-", dir=scratch) as directo
         stream.extend(b"M 100644 inline file.txt\ndata 1\nx\n\n")
     stream.extend(b"done\n")
     git(repo, "fast-import", "--quiet", data=stream)
+    git(repo, "read-tree", "HEAD")
+    git(repo, "checkout-index", "-a")
+    (repo / "file.txt").write_text("staged edit\n")
+    git(repo, "add", "--", "file.txt")
+    (repo / "file.txt").write_text("unstaged edit\n")
+    (repo / "a-preview.txt").write_text(
+        "UNTRACKED-PREVIEW\tliteral\\t\n" + "x" * 160 + "HORIZONTAL-END\n"
+    )
     executable = root / "gitbuddy"
     if binary_source:
         shutil.copy2(binary_source, executable)

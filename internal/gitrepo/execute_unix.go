@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"strings"
@@ -49,6 +50,30 @@ func setEnvironment(env []string, values map[string]string) []string {
 // credentials. A separate session denies controlling-terminal auth prompts.
 // Cancellation terminates the process group, then escalates after one second.
 func execute(ctx context.Context, cwd string, env []string, input string, args ...string) (string, int, error) {
+	return executeCapture(ctx, cwd, env, input, 0, args...)
+}
+
+var errCaptureTooLarge = errors.New("Selected-file content exceeds the 2 MiB limit.")
+
+// captureLimit is opt-in: mutation execution retains its existing behavior.
+// Overflow never returns an apparently complete, truncated patch.
+type captureLimit struct {
+	buffer bytes.Buffer
+	limit  int
+	full   chan struct{}
+}
+
+func (b *captureLimit) Write(p []byte) (int, error) {
+	if len(p) > b.limit-b.buffer.Len() {
+		close(b.full)
+		return 0, errCaptureTooLarge
+	}
+	return b.buffer.Write(p)
+}
+
+func (b *captureLimit) String() string { return b.buffer.String() }
+
+func executeCapture(ctx context.Context, cwd string, env []string, input string, limit int, args ...string) (string, int, error) {
 	if err := ctx.Err(); err != nil {
 		return "", -1, err
 	}
@@ -61,7 +86,16 @@ func execute(ctx context.Context, cwd string, env []string, input string, args .
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	cmd.Stdin = strings.NewReader(input)
 	var out bytes.Buffer
-	cmd.Stdout = &out
+	var captured interface {
+		io.Writer
+		String() string
+	} = &out
+	var full <-chan struct{}
+	if limit > 0 {
+		bounded := &captureLimit{limit: limit, full: make(chan struct{})}
+		captured, full = bounded, bounded.full
+	}
+	cmd.Stdout = captured
 	cmd.WaitDelay = 2 * time.Second
 	if err := cmd.Start(); err != nil {
 		return "", -1, errors.New("Cannot start Git. Check that Git is installed and the repository path is accessible.")
@@ -69,28 +103,46 @@ func execute(ctx context.Context, cwd string, env []string, input string, args .
 	done := make(chan error, 1)
 	go func() { done <- cmd.Wait() }()
 	var err error
+	var stopped error
+	waited := false
 	select {
 	case err = <-done:
+		waited = true
+		// The copy goroutine may finish before this select observes overflow.
+		select {
+		case <-full:
+			stopped = errCaptureTooLarge
+		default:
+		}
 	case <-ctx.Done():
+		stopped = ctx.Err()
+	case <-full:
+		stopped = errCaptureTooLarge
+	}
+	if stopped != nil {
 		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
 		// Always retire descendants too, even if the leader exits on SIGTERM.
 		timer := time.NewTimer(time.Second)
-		select {
-		case <-done:
+		if waited {
 			<-timer.C
-		case <-timer.C:
-			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-			<-done
+		} else {
+			select {
+			case <-done:
+				<-timer.C
+			case <-timer.C:
+				_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+				<-done
+			}
 		}
 		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-		return "", -1, ctx.Err()
+		return "", -1, stopped
 	}
 	if err != nil {
 		var exit *exec.ExitError
 		if errors.As(err, &exit) {
-			return out.String(), exit.ExitCode(), nil
+			return captured.String(), exit.ExitCode(), nil
 		}
 		return "", -1, errors.New("Git process did not finish cleanly. Inspect the repository with Git.")
 	}
-	return out.String(), 0, nil
+	return captured.String(), 0, nil
 }

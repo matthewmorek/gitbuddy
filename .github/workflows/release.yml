@@ -233,7 +233,7 @@ jobs:
           if [ "$RELEASE_VERSION" = 0.1.0 ]; then flags+=(--prerelease); fi
           gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
             "${flags[@]}" \
-            --title "Gitbuddy $RELEASE_VERSION" \
+            --title "$RELEASE_TAG" \
             --notes-file "$RUNNER_TEMP/gitbuddy-release-notes.md" \
             "release-bundle/gitbuddy-$RELEASE_VERSION-darwin-arm64" \
             "release-bundle/gitbuddy-$RELEASE_VERSION-linux-amd64" \

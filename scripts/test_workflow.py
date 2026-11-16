@@ -136,7 +136,7 @@ class WorkflowTests(unittest.TestCase):
                 "--latest=false",
                 "--prerelease",
                 "--title",
-                "Gitbuddy 0.1.0",
+                "v0.1.0",
                 "--notes-file",
                 str(root / "gitbuddy-release-notes.md"),
                 "release-bundle/gitbuddy-0.1.0-darwin-arm64",
@@ -148,14 +148,15 @@ class WorkflowTests(unittest.TestCase):
         )
 
     def test_subsequent_release_stays_draft_without_prerelease_flag(self):
-        _, result, args, created = self.run_draft(version="0.1.1")
+        _, result, args, created = self.run_draft(version="0.3.0")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue(created)
         for flag in ["--verify-tag", "--draft", "--latest=false"]:
             self.assertIn(flag, args)
         self.assertNotIn("--prerelease", args)
-        self.assertIn("release-bundle/gitbuddy-0.1.1-darwin-arm64", args)
-        self.assertIn("release-bundle/gitbuddy-0.1.1-linux-amd64", args)
+        self.assertEqual(args[args.index("--title") + 1], "v0.3.0")
+        self.assertIn("release-bundle/gitbuddy-0.3.0-darwin-arm64", args)
+        self.assertIn("release-bundle/gitbuddy-0.3.0-linux-amd64", args)
         self.assertNotIn("edit", args)
 
     def test_only_new_version_tag_pushes_and_readonly_build(self):

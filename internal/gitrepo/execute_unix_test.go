@@ -22,7 +22,7 @@ func TestMain(m *testing.M) {
 	dir := os.Getenv("GITBUDDY_TEST_PROCESS_DIR")
 	if dir != "" {
 		switch filepath.Base(os.Args[0]) {
-		case "gitbuddy-test-ssh":
+		case "gitbuddy-test-ssh", "gitbuddy-test-output":
 			if len(os.Args) > 1 && os.Args[1] == "descendant" {
 				signal.Reset(syscall.SIGTERM)
 				_ = os.WriteFile(filepath.Join(dir, "descendant"), []byte(strconv.Itoa(os.Getpid())), 0600)
@@ -36,6 +36,18 @@ func TestMain(m *testing.M) {
 				os.Exit(2)
 			}
 			_ = os.WriteFile(filepath.Join(dir, "ssh"), []byte(strconv.Itoa(os.Getpid())), 0600)
+			if filepath.Base(os.Args[0]) == "gitbuddy-test-output" {
+				// Make overflow exercise the same live descendant group as
+				// cancellation, not merely a Git process that already exited.
+				deadline := time.Now().Add(2 * time.Second)
+				for time.Now().Before(deadline) {
+					if _, err := os.Stat(filepath.Join(dir, "descendant")); err == nil {
+						break
+					}
+					time.Sleep(10 * time.Millisecond)
+				}
+				_, _ = os.Stdout.WriteString(strings.Repeat("x", 1024))
+			}
 			_ = child.Wait()
 			_ = os.WriteFile(filepath.Join(dir, "descendant-reaped"), nil, 0600)
 			time.Sleep(10 * time.Second)
@@ -53,6 +65,32 @@ func TestMain(m *testing.M) {
 		}
 	}
 	os.Exit(m.Run())
+}
+
+func TestBoundedCaptureRetiresProcessGroupWithoutPartialOutput(t *testing.T) {
+	f := newFixture(t)
+	path := f.repo("repo", false)
+	helper := filepath.Join(f.root, "gitbuddy-test-output")
+	linkTestExecutable(t, helper)
+	t.Setenv("GITBUDDY_TEST_PROCESS_DIR", f.root)
+	ctx, cancel := context.WithTimeout(testContext, 5*time.Second)
+	defer cancel()
+	command := "!'" + strings.ReplaceAll(helper, "'", "'\\''") + "'"
+	out, code, err := executeCapture(ctx, path, nil, "", 64, "-c", "alias.capture="+command, "capture")
+	equal(t, errors.Is(err, errCaptureTooLarge), true)
+	equal(t, out, "")
+	equal(t, code, -1)
+	waitForFile(t, filepath.Join(f.root, "descendant-reaped"))
+	pid, err := strconv.Atoi(string(waitForFile(t, filepath.Join(f.root, "ssh"))))
+	mustOK(t, err)
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if errors.Is(syscall.Kill(pid, 0), syscall.ESRCH) {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("output helper process still exists after overflow")
 }
 
 func waitForFile(t *testing.T, path string) []byte {

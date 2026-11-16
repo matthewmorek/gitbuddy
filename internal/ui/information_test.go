@@ -170,19 +170,19 @@ func TestRefreshHeaderKeepsSnapshotIdentity(t *testing.T) {
 		Roots:      []string{"frozen"},
 		Comparison: &gitrepo.UpstreamComparison{Ahead: 2, Behind: 1},
 	}
-	m.Update(m.refresh(gitrepo.Current)())
+	deliverRefresh(t, m, m.refresh(gitrepo.Current))
 	header := ansi.Strip(m.header(m.colors()))
 	if !strings.Contains(header, "feature/topic | ↑2 ↓1") || strings.Contains(header, "main") {
 		t.Fatalf("header paired old status with new snapshot counts: %q", header)
 	}
 	// A detached or unborn snapshot must not fall back to the old main status.
 	repo.snapshot = &gitrepo.Snapshot{Head: repo.status.Head}
-	m.Update(m.refresh(gitrepo.Current)())
+	deliverRefresh(t, m, m.refresh(gitrepo.Current))
 	if header := ansi.Strip(m.header(m.colors())); !strings.Contains(header, "detached HEAD | ↑— ↓—") {
 		t.Fatalf("header did not follow detached snapshot: %q", header)
 	}
 	repo.snapshot = &gitrepo.Snapshot{Branch: "unborn"}
-	m.Update(m.refresh(gitrepo.Current)())
+	deliverRefresh(t, m, m.refresh(gitrepo.Current))
 	if header := ansi.Strip(m.header(m.colors())); !strings.Contains(header, "unborn | ↑— ↓—") {
 		t.Fatalf("header did not follow unborn snapshot: %q", header)
 	}
@@ -217,13 +217,13 @@ func TestNestedLabelsKeepEveryTerminalCellOnItsRowSurface(t *testing.T) {
 		}
 		// Each button's leading/trailing spaces have the same surface as its
 		// label, even after the outer pane and base view are composed.
-		for x := 4; x < 18; x++ {
+		for x := 4; x < 27; x++ {
 			bg := c.Background
-			if x >= 9 {
+			if x < 13 {
 				bg = c.Selection
 			}
 			if actual := screen[4][x].Style.Bg; actual == nil || color.RGBAModel.Convert(actual) != color.RGBAModel.Convert(lipgloss.Color(bg)) {
-				t.Fatalf("%s scope button padding cell %d lost its background", mode, x)
+				t.Fatalf("%s mode button padding cell %d lost its background", mode, x)
 			}
 		}
 	}
@@ -254,7 +254,7 @@ func TestDetailsContentOrderStatisticsAndSafeWrapping(t *testing.T) {
 	}
 	body, files, metadata := strings.Index(text, "Body paragraph"), strings.Index(text, "file_path"), strings.Index(text, "Author:")
 	if body < 0 || files < body || metadata < files ||
-		!strings.Contains(text, `old\tname → new↵name\x1b[2J`) ||
+		!strings.Contains(text, `old  name → new↵name\x1b[2J`) ||
 		strings.Contains(text, "+0") || strings.Contains(text, "-0") {
 		t.Fatal("body, safe rename, file counts or metadata order regressed")
 	}
@@ -276,7 +276,7 @@ func TestDetailsContentOrderStatisticsAndSafeWrapping(t *testing.T) {
 		for _, row := range rows {
 			content := row.String()
 			statusColors := map[string]string{
-				"M  ": m.semanticColor(c, "#fbbf24", "#a16207"),
+				"M  ": m.semanticColor(c, "#60a5fa", "#2563eb"),
 				"A  ": m.semanticColor(c, "#4ade80", "#15803d"),
 				"D  ": errorColor(c), "R100  ": c.Accent,
 			}
@@ -333,7 +333,7 @@ func TestChangedFileNamesUsePathAwareCellBudgets(t *testing.T) {
 		{"new/deep/other.go", "old/deep/file.go", 25, "old…file.go → ne…other.go"},
 		{"new/deep/other.go", "x", 22, "x → new/deep/other.go"},
 		{"new.go", "old.go", 5, "n….go"},
-		{"new\nname\x1b[2J", "old\tname", 40, `old\tname → new↵name\x1b[2J`},
+		{"new\nname\x1b[2J", "old\tname", 40, `old  name → new↵name\x1b[2J`},
 		{"file.go", "", 1, "…"},
 		{"file.go", "", 0, ""},
 	} {
@@ -388,9 +388,9 @@ func TestDetailsFilesStayOnSingleRowsWithReservedStatistics(t *testing.T) {
 	}
 }
 
-func TestHistoryHeaderKeepsScopeAndFetchStatusInSeparateCellBudgets(t *testing.T) {
+func TestHistoryHeaderKeepsModesAndReadyStatusInSeparateCellBudgets(t *testing.T) {
 	m, _ := setup(t, 3)
-	m.lastFetch = time.Date(2026, 11, 14, 12, 34, 56, 0, time.UTC)
+	m.historyRefreshed = m.now.Add(-2 * time.Minute)
 	for _, width := range []int{120, 75, 40, 20, 10} {
 		m.width = width
 		paneWidth := m.contentWidth()
@@ -402,21 +402,24 @@ func TestHistoryHeaderKeepsScopeAndFetchStatusInSeparateCellBudgets(t *testing.T
 		if ansi.StringWidth(header) != inner {
 			t.Fatalf("width %d: scope/status overlap their row budget", width)
 		}
-		if inner >= 32 && !strings.HasSuffix(ansi.Strip(header), "Fetched 12:34:56") {
-			t.Fatal("fetch timestamp is not opposite-aligned")
+		if !m.footerStatus() && !strings.HasSuffix(ansi.Strip(header), "Ready · 2 mins ago") {
+			t.Fatal("ready timestamp is not opposite-aligned")
+		}
+		if strings.Contains(ansi.Strip(header), "Current branch") || strings.Contains(ansi.Strip(header), "All branches") {
+			t.Fatal("history scope leaked into the list header")
 		}
 	}
 	m.width = 120
 	m.changeScope(gitrepo.All)
 	c := m.colors()
 	screen := uv.NewStyledString(m.View().Content).Lines(ansi.GraphemeWidth)
-	for x := 4; x < 18; x++ {
+	for x := 4; x < 27; x++ {
 		want := c.Background
-		if x < 9 {
+		if x < 13 {
 			want = c.Selection
 		}
 		if actual := screen[4][x].Style.Bg; actual == nil || color.RGBAModel.Convert(actual) != color.RGBAModel.Convert(lipgloss.Color(want)) {
-			t.Fatal("buttons do not highlight requested scope while loading")
+			t.Fatal("scope loading must not change active mode highlighting")
 		}
 	}
 	m.width, m.focus, m.operation = 75, "details", "Fetching"
@@ -442,12 +445,12 @@ func TestActiveStatusSurvivesNarrowHistoryHeader(t *testing.T) {
 		{"tiny fetch", 20, "Fetching", false, false, "Fetching", true},
 		{"tiny loading", 20, "", true, false, "Loading", true},
 		{"tiny closing", 20, "Fetching", false, true, "Quit pending", true},
-		{"fetch below boundary", 35, "Fetching", false, false, "Fetching", true},
-		{"fetch at boundary", 36, "Fetching", false, false, "Fetching", false},
-		{"closing below boundary", 53, "Fetching", false, true, "waiting to quit", true},
-		{"closing at boundary", 54, "Fetching", false, true, "waiting to quit", false},
+		{"fetch below boundary", 44, "Fetching", false, false, "Fetching", true},
+		{"fetch at boundary", 45, "Fetching", false, false, "Fetching", false},
+		{"closing below boundary", 62, "Fetching", false, true, "waiting to quit", true},
+		{"closing at boundary", 63, "Fetching", false, true, "waiting to quit", false},
 		{"normal single pane", 75, "Fetching", false, false, "Fetching", false},
-		{"normal split panes", 120, "Fetching", false, true, "waiting to quit", false},
+		{"normal split panes", 120, "Fetching", false, true, "waiting to quit", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			m, _ := setup(t, 3)
@@ -473,5 +476,119 @@ func TestActiveStatusSurvivesNarrowHistoryHeader(t *testing.T) {
 				t.Fatal("normal-width status must appear only in the history header")
 			}
 		})
+	}
+}
+
+func TestWorkingCopyPatchHeadersAndHunkContentKeepDistinctColors(t *testing.T) {
+	m, _ := setup(t, 3)
+	m.working.details = &gitrepo.WorkingCopyDetails{
+		Entry: gitrepo.WorkingCopyEntry{Path: "a"}, Outcome: gitrepo.WorkingCopyReady,
+		Sections: []gitrepo.WorkingCopySection{{Label: "Unstaged", Kind: gitrepo.WorkingCopyPatch,
+			Text: "diff --git a/a b/a\n--- a/a\n+++ b/a\n@@ -1 +1 @@\n---removed\n+++added\n\\ No newline at end of file\n"}},
+	}
+	for _, mode := range []string{"dark", "light"} {
+		m.settings.Value.ColorMode = mode
+		c := m.colors()
+		rows := uv.NewStyledString(m.renderFileDetails(c, c.Panel)).Lines(ansi.GraphemeWidth)
+		for _, row := range rows {
+			text := row.String()
+			want := ""
+			switch text {
+			case "--- a/a", "+++ b/a", "\\ No newline at end of file":
+				want = c.Muted
+			case "---removed":
+				want = errorColor(c)
+			case "+++added":
+				want = m.semanticColor(c, "#4ade80", "#15803d")
+			case "@@ -1 +1 @@":
+				want = c.Accent
+			}
+			if want != "" && (row[0].Style.Fg == nil ||
+				color.RGBAModel.Convert(row[0].Style.Fg) != color.RGBAModel.Convert(lipgloss.Color(want))) {
+				t.Fatalf("%s patch line %q lost semantic classification", mode, text)
+			}
+		}
+	}
+}
+
+func TestSharedFileRowsKeepStatusPositionsCountsAndColors(t *testing.T) {
+	m, _ := setup(t, 3)
+	for _, mode := range []string{"dark", "light"} {
+		m.settings.Value.ColorMode = mode
+		c := m.colors()
+		for _, tc := range []struct {
+			index, worktree, prefix, counts string
+			untracked                       bool
+			stats                           gitrepo.LineStats
+		}{
+			{"", "M", " M path", "+121 -73", false, gitrepo.LineStats{Known: true, Added: 121, Deleted: 73}},
+			{"", "", " ? path", "+44", true, gitrepo.LineStats{Known: true, Added: 44}},
+			{"", "D", " D path", "-17", false, gitrepo.LineStats{Known: true, Deleted: 17}},
+			{"D", "", "D  path", "-101", false, gitrepo.LineStats{Known: true, Deleted: 101}},
+			{"A", "", "A  path", "binary", false, gitrepo.LineStats{Known: true, Binary: true}},
+			{"M", "", "M  path", "+3", false, gitrepo.LineStats{Known: true, Added: 3}},
+			{"M", "M", "MM path", "+2 -2", false, gitrepo.LineStats{Known: true, Added: 2, Deleted: 2}},
+			{"D", "", "D? path", "+1 -1", true, gitrepo.LineStats{Known: true, Added: 1, Deleted: 1}},
+			{"U", "U", "UU path", "unavailable", false, gitrepo.LineStats{}},
+		} {
+			row := m.renderFileRow(fileRow{path: "path", index: tc.index, worktree: tc.worktree,
+				untracked: tc.untracked, stats: tc.stats}, 50, c, c.Panel)
+			text := ansi.Strip(row)
+			if !strings.HasPrefix(text, tc.prefix) || !strings.HasSuffix(text, tc.counts) ||
+				ansi.StringWidth(row) != 50 || strings.Contains(text, "\n") {
+				t.Fatalf("file row lost positions, counts or single-row width: %q", text)
+			}
+			cells := uv.NewStyledString(row).Lines(ansi.GraphemeWidth)[0]
+			pathColor := c.Text
+			if tc.untracked && tc.index == "" {
+				pathColor = c.Muted
+				for _, cell := range cells {
+					if cell.Content != " " && (cell.Style.Fg == nil ||
+						color.RGBAModel.Convert(cell.Style.Fg) != color.RGBAModel.Convert(lipgloss.Color(c.Muted))) {
+						t.Fatal("purely untracked row is not wholly muted")
+					}
+				}
+			}
+			if actual := cells[3].Style.Fg; actual == nil ||
+				color.RGBAModel.Convert(actual) != color.RGBAModel.Convert(lipgloss.Color(pathColor)) {
+				t.Fatal("tracked path inherited a semantic or untracked status color")
+			}
+		}
+	}
+	// The two feature owners use the same row contract, not matching copies.
+	c := m.colors()
+	m.details = &gitrepo.Details{SHA: strings.Repeat("a", 40),
+		Files: []gitrepo.ChangedFile{{Status: "M", Path: "path", Added: 3}}}
+	want := ansi.Strip(m.renderFileRow(fileRow{path: "path", index: "M",
+		stats: gitrepo.LineStats{Known: true, Added: 3}}, m.paneWidth()-2*horizontalPadding, c, c.Panel))
+	if !strings.Contains(ansi.Strip(strings.Join(m.detailLines(), "\n")), want) {
+		t.Fatal("commit details bypassed the shared file row")
+	}
+	m.mode = workingCopyMode
+	m.working.loaded = true
+	m.working.entries = []gitrepo.WorkingCopyEntry{
+		{Path: "first", IndexStatus: "M", Stats: gitrepo.LineStats{Known: true, Added: 3}},
+		{Path: "second", WorktreeStatus: "D", Stats: gitrepo.LineStats{Known: true, Deleted: 17}},
+	}
+	pane := ansi.Strip(m.pane("history", 70, 10, c))
+	if !strings.Contains(pane, "M  first") || !strings.Contains(pane, " D second") ||
+		!strings.Contains(pane, "+3") || !strings.Contains(pane, "-17") {
+		t.Fatal("unselected working-copy rows lost their counts or status positions")
+	}
+}
+
+func TestDisplayTabsExpandBeforeSanitizingWithoutChangingLiteralEscapes(t *testing.T) {
+	raw := "a\tb " + `literal\t` + "\x1b[2J\r"
+	if got := safeLine(raw); got != `a  b literal\t\x1b[2J\r` {
+		t.Fatalf("tab expansion or sanitization is wrong: %q", got)
+	}
+	m, _ := setup(t, 1)
+	m.working.details = &gitrepo.WorkingCopyDetails{Outcome: gitrepo.WorkingCopyReady,
+		Entry:    gitrepo.WorkingCopyEntry{Path: "path\tname"},
+		Sections: []gitrepo.WorkingCopySection{{Label: "Untracked", Kind: gitrepo.WorkingCopyPreview, Text: raw}}}
+	text := ansi.Strip(m.renderFileDetails(m.colors(), m.colors().Panel))
+	if !strings.Contains(text, `a  b literal\t\x1b[2J\r`) ||
+		!strings.Contains(text, "path  name") || strings.Contains(text, "\t") {
+		t.Fatal("file details did not use the safe two-space display boundary")
 	}
 }

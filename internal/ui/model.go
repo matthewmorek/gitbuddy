@@ -20,7 +20,6 @@ import (
 type historyMsg struct {
 	generation int
 	scope      gitrepo.Scope
-	status     gitrepo.Status
 	snapshot   gitrepo.Snapshot
 	rows       []gitrepo.Commit
 	count      int
@@ -59,6 +58,10 @@ type Model struct {
 	focus                                                 string
 	scope, requestedScope                                 gitrepo.Scope
 	status                                                gitrepo.Status
+	working                                               workingCopy
+	mode                                                  viewMode
+	statusLoading                                         bool
+	statusFailure, historyFailure                         string
 	snapshot                                              gitrepo.Snapshot
 	rows                                                  []gitrepo.Commit
 	selected                                              string
@@ -73,6 +76,9 @@ type Model struct {
 	started, closing                                      bool
 	operation, failure                                    string
 	lastFetch                                             time.Time
+	historyRefreshed, statusRefreshed                     time.Time
+	statusRefreshPending                                  bool
+	refreshCancel                                         context.CancelFunc
 	now                                                   time.Time
 	fetchFailed                                           bool
 	dialog                                                string
@@ -130,10 +136,17 @@ func (m *Model) refresh(scope gitrepo.Scope) tea.Cmd {
 		return nil
 	}
 	m.generation++
+	if m.refreshCancel != nil {
+		m.refreshCancel()
+	}
 	generation := m.generation
 	m.loading = true
 	m.paging = false
 	m.requestedScope = scope
+	m.statusLoading = true
+	m.statusRefreshPending = false
+	m.statusFailure = ""
+	m.retireFileRead()
 	count := min(m.settings.Value.MaxCommits, max(200, len(m.rows)))
 	if scope != m.scope {
 		count = min(200, m.settings.Value.MaxCommits)
@@ -142,19 +155,20 @@ func (m *Model) refresh(scope gitrepo.Scope) tea.Cmd {
 	if count < m.settings.Value.MaxCommits {
 		limit++
 	}
-	ctx, repo := m.ctx, m.repo
-	return func() tea.Msg {
-		status, err := repo.Status(ctx)
-		if err != nil {
-			return historyMsg{generation: generation, err: err}
-		}
+	ctx, cancel := context.WithCancel(m.ctx)
+	m.refreshCancel = cancel
+	repo := m.repo
+	return tea.Batch(func() tea.Msg {
 		snapshot, err := repo.Snapshot(ctx, scope)
 		if err != nil {
 			return historyMsg{generation: generation, err: err}
 		}
 		rows, err := repo.History(ctx, snapshot, 0, limit)
-		return historyMsg{generation, scope, status, snapshot, rows, count, err}
-	}
+		return historyMsg{generation: generation, scope: scope, snapshot: snapshot, rows: rows, count: count, err: err}
+	}, func() tea.Msg {
+		status, err := repo.Status(ctx)
+		return statusMsg{generation, status, err}
+	})
 }
 
 func (m *Model) selectCommit(sha string) tea.Cmd {
@@ -243,6 +257,10 @@ func (m *Model) mutate(mode string) tea.Cmd {
 }
 
 func (m *Model) quit() tea.Cmd {
+	m.retireFileRead()
+	if m.refreshCancel != nil {
+		m.refreshCancel()
+	}
 	m.closing = true
 	m.timer++
 	m.noticeID++
@@ -293,6 +311,7 @@ func (m *Model) Update(msg tea.Msg) (model tea.Model, command tea.Cmd) {
 		m.height = max(1, msg.Height)
 		m.ensureVisible()
 		m.detailsTop = min(m.detailsTop, m.maxDetailsTop())
+		m.sizeFileViewport()
 		return m, nil
 	case tea.BackgroundColorMsg:
 		m.dark = msg.IsDark()
@@ -302,7 +321,9 @@ func (m *Model) Update(msg tea.Msg) (model tea.Model, command tea.Cmd) {
 			return m, nil
 		}
 		m.loading = false
+		m.historyFailure = ""
 		if msg.err != nil {
+			m.historyFailure = msg.err.Error()
 			m.fail(msg.err)
 			return m, nil
 		}
@@ -310,12 +331,8 @@ func (m *Model) Update(msg tea.Msg) (model tea.Model, command tea.Cmd) {
 		if m.top < len(m.rows) {
 			anchor = m.rows[m.top].SHA
 		}
-		oldWarnings := strings.Join(m.status.FetchWarnings, "\n")
-		m.status = msg.status
-		if warnings := strings.Join(m.status.FetchWarnings, "\n"); warnings != oldWarnings {
-			m.notify(warnings, true)
-		}
 		m.snapshot = msg.snapshot
+		m.historyRefreshed = time.Now()
 		m.scope = msg.scope
 		m.rows = msg.rows[:min(msg.count, len(msg.rows))]
 		m.hasMore = msg.count < m.settings.Value.MaxCommits && len(msg.rows) > msg.count
@@ -343,12 +360,11 @@ func (m *Model) Update(msg tea.Msg) (model tea.Model, command tea.Cmd) {
 		}
 		m.ensureVisible()
 		// Give the loaded local view a render interval before the initial fetch.
-		var ready tea.Cmd
-		if !m.started {
-			generation := m.generation
-			ready = tea.Tick(80*time.Millisecond, func(time.Time) tea.Msg { return readyMsg(generation) })
-		}
-		return m, tea.Batch(detail, ready)
+		return m, tea.Batch(detail, m.localReady())
+	case statusMsg:
+		return m, m.applyStatus(msg)
+	case fileDetailsMsg:
+		return m, m.applyFileDetails(msg)
 	case pageMsg:
 		if msg.generation != m.generation || m.closing {
 			return m, nil
@@ -384,7 +400,7 @@ func (m *Model) Update(msg tea.Msg) (model tea.Model, command tea.Cmd) {
 		}
 		return m, nil
 	case readyMsg:
-		if m.started || m.closing || int(msg) != m.generation || m.loading {
+		if m.started || m.closing || int(msg) != m.generation || m.loading || m.statusLoading {
 			return m, nil
 		}
 		m.started = true
@@ -448,6 +464,10 @@ func (m *Model) Update(msg tea.Msg) (model tea.Model, command tea.Cmd) {
 			return m, m.dialogKey(msg)
 		}
 		switch key {
+		case "1":
+			return m, m.changeMode(historyMode)
+		case "2":
+			return m, m.changeMode(workingCopyMode)
 		case "q":
 			return m, m.quit()
 		case "r":
@@ -464,17 +484,33 @@ func (m *Model) Update(msg tea.Msg) (model tea.Model, command tea.Cmd) {
 			if m.width < 100 {
 				m.focus = "details"
 			}
-		case "up", "k", "down", "j", "pgup", "pgdown":
+		case "left", "right", "up", "k", "down", "j", "pgup", "pgdown":
+			if m.mode == workingCopyMode && m.focus == "details" {
+				m.prepareFileViewport(m.colors())
+				var cmd tea.Cmd
+				m.working.viewport, cmd = m.working.viewport.Update(msg)
+				return m, cmd
+			}
+			if key == "left" || key == "right" {
+				return m, nil
+			}
 			delta := 1
 			if key == "up" || key == "k" || key == "pgup" {
 				delta = -1
 			}
 			if key == "pgup" || key == "pgdown" {
-				delta *= m.visibleRows()
+				if m.mode == workingCopyMode {
+					delta *= m.visibleFileRows()
+				} else {
+					delta *= m.visibleRows()
+				}
 			}
 			if m.focus == "details" {
 				m.detailsTop = max(0, min(m.maxDetailsTop(), m.detailsTop+delta))
 			} else {
+				if m.mode == workingCopyMode {
+					return m, m.moveFile(delta)
+				}
 				return m, m.move(delta)
 			}
 		}
@@ -483,9 +519,9 @@ func (m *Model) Update(msg tea.Msg) (model tea.Model, command tea.Cmd) {
 		if m.closing || m.dialog != "" || msg.Button != tea.MouseLeft || !m.historyVisible() || m.paneHeight() < 2 {
 			return m, nil
 		}
-		for _, segment := range m.scopeSegments() {
+		for _, segment := range m.modeSegments() {
 			if msg.Y == 4 && msg.X >= 2*horizontalPadding+segment.start && msg.X < 2*horizontalPadding+segment.end {
-				return m, m.changeScope(segment.scope)
+				return m, m.changeMode(segment.mode)
 			}
 		}
 		return m, nil
@@ -502,6 +538,21 @@ func (m *Model) activity() string {
 	if m.operation != "" {
 		return m.operation + "..."
 	}
+	if m.mode == workingCopyMode {
+		if m.statusLoading {
+			if !m.working.loaded {
+				return "Loading working copy..."
+			}
+			return "Refreshing working copy..."
+		}
+		if m.working.loading {
+			if m.working.details != nil {
+				return "Refreshing file..."
+			}
+			return "Loading file..."
+		}
+		return ""
+	}
 	if m.loading {
 		return "Loading history..."
 	}
@@ -509,6 +560,16 @@ func (m *Model) activity() string {
 		return "Loading more commits..."
 	}
 	return ""
+}
+
+// Either read can settle last. Startup fetch needs both local history and the
+// live remote list; an early history result must not consume its only attempt.
+func (m *Model) localReady() tea.Cmd {
+	if m.started || m.closing || m.loading || m.statusLoading || m.historyFailure != "" || m.statusFailure != "" {
+		return nil
+	}
+	generation := m.generation
+	return tea.Tick(80*time.Millisecond, func(time.Time) tea.Msg { return readyMsg(generation) })
 }
 func (m *Model) warnings() string {
 	all := []string{m.failure, m.settings.Warning, m.updates.failure}
@@ -665,6 +726,20 @@ func (m *Model) options() []action {
 		}
 		options = []action{{id: "fetch", title: "Fetch now", category: "Git", disabled: fetch}, {id: "ff-only", title: "Pull — fast-forward only", category: "Git", disabled: pull}, {id: "merge", title: "Pull — merge", category: "Git", disabled: pull}, {id: "rebase", title: "Pull — rebase", category: "Git", disabled: pull}, {id: "refresh", title: "Refresh local history", category: "History", shortcut: "r"}, {id: "all", title: "All branches", category: "History"}, {id: "current", title: "Current branch", category: "History"}, {id: "settings", title: "Open settings", category: "Settings"}, {id: "auto", title: "Automatic fetch enabled", category: "Settings › Fetch", value: strconv.FormatBool(m.settings.Value.AutoFetch)}, {id: "interval", title: "Automatic fetch interval", category: "Settings › Fetch", value: fmt.Sprintf("%d min", m.settings.Value.FetchIntervalMinutes)}, {id: "max", title: "Maximum commits", category: "Settings › History", value: strconv.Itoa(m.settings.Value.MaxCommits)}, {id: "themes", title: "Theme", category: "Settings › Appearance", value: m.settings.Value.Theme}, {id: "modes", title: "Color mode", category: "Settings › Appearance", value: m.settings.Value.ColorMode}, {id: "errors", title: "Show errors and warnings", category: "Status"}, {id: "clear", title: "Clear error", category: "Status"}, {id: "quit", title: "Quit", category: "App", shortcut: "q"}}
 		// Keep Quit last, including in compact palettes navigated to the end.
+		options = append([]action{
+			{id: "history", title: "History", category: "View", shortcut: "1"},
+			{id: "working-copy", title: "Working copy", category: "View", shortcut: "2"},
+		}, options...)
+		for i := range options {
+			switch options[i].id {
+			case "refresh":
+				options[i].title, options[i].category = "Refresh local repository", "Repository"
+			case "all", "current":
+				if options[i].id == string(m.activeScope()) {
+					options[i].value = "active scope"
+				}
+			}
+		}
 		quit := options[len(options)-1]
 		options = append(options[:len(options)-1], m.updateActions()...)
 		options = append(options, quit)
@@ -697,6 +772,10 @@ func matches(query, text string) bool {
 }
 func (m *Model) execute(a action) tea.Cmd {
 	switch a.id {
+	case "history":
+		return m.changeMode(historyMode)
+	case "working-copy":
+		return m.changeMode(workingCopyMode)
 	case "check-updates":
 		return m.checkUpdates(true)
 	case "install-update":
@@ -711,6 +790,7 @@ func (m *Model) execute(a action) tea.Cmd {
 	case "refresh":
 		return tea.Batch(m.refresh(m.activeScope()), m.spinner.Tick)
 	case "all", "current":
+		m.changeMode(historyMode)
 		return m.changeScope(gitrepo.Scope(a.id))
 	case "settings", "themes", "modes", "errors":
 		return m.openDialog(a.id, "")

@@ -2,13 +2,14 @@
 
 # Gitbuddy
 
-A keyboard-first Git history browser for your terminal.
+A keyboard-first Git history and working-copy browser for your terminal.
 
-Browse commits, read their messages and changed filenames, and fetch or pull
+Browse commits, inspect local changes and unified diffs, and fetch or pull
 without leaving the terminal. **Ctrl+P** puts commands and settings in one place.
 
 - History and commit details side by side, with a single-pane layout on smaller terminals.
 - Current-branch or all-branch history, periodic fetching, and explicit pull modes.
+- Read-only staged/unstaged comparisons and bounded untracked-file previews.
 - OpenCode, Tokyo Night and Catppuccin palettes in light, dark or system mode.
 
 [Install](#install) · [Use](#use) · [Update](#update) · [Uninstall](#uninstall) ·
@@ -60,22 +61,34 @@ gitbuddy /path/to/your/repository
 Repository subdirectories also work. History opens on the **current branch and
 its upstream**, including incoming commits; choose **Ctrl+P → All branches** for
 the wider view. Start with **Ctrl+P** to explore commands and settings.
+Press **2** or click **Working copy** to inspect changed files; **1** returns to
+**History**. Choose history scope in the palette, which marks the active value.
+Working-copy browsing never stages or edits files.
 
 | Key                 | Action                                                    |
 | ------------------- | --------------------------------------------------------- |
 | Ctrl+P              | Search commands **and individual settings**               |
-| ↑ / ↓ or k / j      | Select a commit; scroll when details have focus           |
+| 1 / 2               | Select History / Working copy                             |
+| ↑ / ↓ or k / j      | Select a commit/file; scroll focused details               |
+| ← / →               | Scroll working-copy details horizontally                  |
 | Page Up / Page Down | Move a page                                               |
 | Tab / Shift+Tab     | Switch pane                                               |
 | Enter               | Open details on a narrow terminal; apply a palette choice |
-| Escape              | Close a dialog or return to history                       |
-| r                   | Refresh local history and status                          |
+| Escape              | Close a dialog or return to the active mode's list        |
+| r                   | Refresh local history, status and selected file           |
 | q                   | Quit outside text input                                   |
 | Ctrl+C              | Close a dialog; otherwise request orderly quit            |
 
 Automatic fetching starts after local history renders and repeats **every five
 minutes** by default. Disable it or change the interval in **Ctrl+P → Settings**.
 Pulling always requires choosing an explicit command.
+Local changes refresh on entering Working copy, on **r**, and after fetch/pull.
+There is no filesystem watcher; refresh after external edits. Mixed staged and
+unstaged changes share a file row but have separate labeled comparisons.
+Each file occupies one row with staged/unstaged status positions and right-aligned
+line counts or a binary indicator. The list header shows refresh activity once,
+then **Ready · just now** with a relative age.
+Space has no staging action; commit details still show statistics, not patches.
 
 See the [user guide](docs/USAGE.md) for history limits, pull safety, preferences,
 custom themes and update behavior.
