@@ -332,6 +332,7 @@ func (m *Model) Update(msg tea.Msg) (model tea.Model, command tea.Cmd) {
 			anchor = m.rows[m.top].SHA
 		}
 		m.snapshot = msg.snapshot
+		m.notify(msg.snapshot.AncestryWarning, true)
 		m.historyRefreshed = time.Now()
 		m.scope = msg.scope
 		m.rows = msg.rows[:min(msg.count, len(msg.rows))]
@@ -520,7 +521,7 @@ func (m *Model) Update(msg tea.Msg) (model tea.Model, command tea.Cmd) {
 			return m, nil
 		}
 		for _, segment := range m.modeSegments() {
-			if msg.Y == 4 && msg.X >= 2*horizontalPadding+segment.start && msg.X < 2*horizontalPadding+segment.end {
+			if msg.Y == 4 && msg.X >= shellHorizontalPadding+horizontalPadding+segment.start && msg.X < shellHorizontalPadding+horizontalPadding+segment.end {
 				return m, m.changeMode(segment.mode)
 			}
 		}
@@ -572,7 +573,7 @@ func (m *Model) localReady() tea.Cmd {
 	return tea.Tick(80*time.Millisecond, func(time.Time) tea.Msg { return readyMsg(generation) })
 }
 func (m *Model) warnings() string {
-	all := []string{m.failure, m.settings.Warning, m.updates.failure}
+	all := []string{m.failure, m.settings.Warning, m.updates.failure, m.snapshot.AncestryWarning}
 	all = append(all, m.status.FetchWarnings...)
 	all = append(all, m.themes.Warnings...)
 	var out []string

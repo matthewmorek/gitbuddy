@@ -158,6 +158,19 @@ def exercise(root, repo, width, mode, executable, isolated):
         assert b"History" in output and b"Commit 1200" in output, (
             "Initial history did not render"
         )
+        assert "Nested member 日本語".encode() in output, (
+            "Nested merge fixture did not reach the history panel"
+        )
+        assert b"Incoming fixture" in output, "Upstream-only fixture is missing"
+        initial_rows = re.sub(rb"\x1b\[[0-?]*[ -/]*[@-~]", b"", output)
+        for subject, arrow in [
+            (b"Commit 1200", "↑"),
+            ("Nested member 日本語".encode(), "↑"),
+            (b"Incoming fixture", "↓"),
+        ]:
+            assert re.search(
+                re.escape(subject) + rb"[^\r\n]*" + arrow.encode(), initial_rows
+            ), f"Commit relation gutter missing after {subject!r}"
         assert b"Current branch" not in output and b"All branches" not in output, (
             "History scope must stay in the palette, not the list header"
         )
@@ -269,7 +282,7 @@ def exercise(root, repo, width, mode, executable, isolated):
             "Runtime error in PTY"
         )
         print(
-            f"PASS {'binary (no Go/Bun/Node)' if isolated else 'source'} PTY {width}x32, {mode}, 1200 commits: loading/ready/repository-name/single-file-rows/all-row-counts/two-space-tabs/summaries/long-line/mixed-diffs/palette/theme/update eligibility/plain Escape/paging/quit/restoration"
+            f"PASS {'binary (no Go/Bun/Node)' if isolated else 'source'} PTY {width}x32, {mode}, 1200 main commits plus nested merge/diverged upstream fixture: relation-gutters/loading/ready/repository-name/single-file-rows/all-row-counts/two-space-tabs/summaries/long-line/mixed-diffs/palette/theme/update eligibility/plain Escape/paging/quit/restoration"
         )
     finally:
         evidence = PROJECT / ".verification"
@@ -297,13 +310,37 @@ with tempfile.TemporaryDirectory(prefix="gitbuddy-pty-", dir=scratch) as directo
     git(repo, "init", "--initial-branch=main")
     stream = bytearray()
     for index in range(1, 1201):
+        if index == 1199:
+            # All refs exist only in this disposable repository. A nested merge
+            # exercises hierarchy together with local-only and incoming gutters,
+            # without a remote, fetch, or selected-checkout ref changes.
+            for branch, message, parent, merge in [
+                ("topic", "Merged member", "refs/heads/main", ""),
+                ("nested", "Nested member 日本語", "refs/heads/topic", ""),
+                ("topic", "Nested merge", "", "refs/heads/nested"),
+                ("incoming", "Incoming fixture", "refs/heads/main", ""),
+            ]:
+                data = message.encode()
+                stream.extend(
+                    f"commit refs/heads/{branch}\ncommitter Fixture <fixture@example.invalid> 1700001199 +0000\ndata {len(data)}\n".encode()
+                )
+                stream.extend(data + b"\n")
+                if parent:
+                    stream.extend(f"from {parent}\n".encode())
+                if merge:
+                    stream.extend(f"merge {merge}\n".encode())
+                stream.extend(b"\n")
         message = f"Commit {index}"
         stream.extend(
             f"commit refs/heads/main\ncommitter Fixture <fixture@example.invalid> {1700000000 + index} +0000\ndata {len(message)}\n{message}\n".encode()
         )
+        if index == 1200:
+            stream.extend(b"merge refs/heads/topic\n")
         stream.extend(b"M 100644 inline file.txt\ndata 1\nx\n\n")
     stream.extend(b"done\n")
     git(repo, "fast-import", "--quiet", data=stream)
+    git(repo, "config", "branch.main.remote", ".")
+    git(repo, "config", "branch.main.merge", "refs/heads/incoming")
     git(repo, "read-tree", "HEAD")
     git(repo, "checkout-index", "-a")
     (repo / "file.txt").write_text("staged edit\n")

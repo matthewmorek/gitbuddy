@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.3.2] — 2026-11-17
+
+- Indent commits introduced by a merge beneath that merge, including nested merges,
+  with membership frozen across history pages. When ancestry is incomplete or
+  exceeds analysis limits, keep history browsable without merge indentation and
+  show a warning rather than guess. This is not a full branch graph.
+- Show neutral **↑** / **↓** markers in fixed right gutters for local-only and
+  incoming commits, keeping them aligned across merge indentation.
+- Extend selected rows edge-to-edge in **History** and **Working copy**, with
+  two-cell internal padding and gutters.
+- Keep a one-cell horizontal and one-row vertical margin around the app.
+
+macOS arm64 and Linux x86_64 remain the distribution targets. The macOS build
+remains unsigned and not notarized; existing settings are preserved.
+
 ## [0.3.1] — 2026-11-16
 
 This release carries the Working copy features prepared for `0.3.0`, whose build

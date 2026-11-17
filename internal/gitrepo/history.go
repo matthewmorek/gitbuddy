@@ -143,7 +143,126 @@ func (r *Repository) Snapshot(ctx context.Context, scope Scope) (Snapshot, error
 			}
 		}
 	}
-	return snapshot, nil
+	snapshot.mergeDepths, snapshot.AncestryWarning, err = r.mergeDepths(ctx, snapshot.Roots)
+	return snapshot, err
+}
+
+// Only ancestry metadata (not messages/details) is read beyond the UI's pages.
+// A complete bounded walk is necessary: a first parent outside the loaded rows
+// can still reach a purported merge member. Never classify that case by absence.
+const maxAncestryCommits = 100000
+const maxAncestryVisits = 1000000
+
+func (r *Repository) mergeDepths(ctx context.Context, roots []string) (map[string]int, string, error) {
+	if len(roots) == 0 {
+		return nil, "", nil
+	}
+	shallow, err := r.git(ctx, "", "rev-parse", "--is-shallow-repository")
+	if err != nil {
+		return nil, "", err
+	}
+	if strings.TrimSpace(shallow) == "true" {
+		return nil, "Merge indentation unavailable: shallow history may hide shared ancestors.", nil
+	}
+	out, err := r.git(ctx, strings.Join(roots, "\n")+"\n", "rev-list", "--topo-order", "--parents",
+		fmt.Sprintf("--max-count=%d", maxAncestryCommits+1), "--stdin", "--")
+	if err != nil {
+		return nil, "", err
+	}
+	depths, warning := parseMergeDepths(out)
+	return depths, warning, nil
+}
+
+func parseMergeDepths(out string) (map[string]int, string) {
+	incomplete := "Merge indentation unavailable: incomplete commit ancestry."
+	if out == "" || !strings.HasSuffix(out, "\n") {
+		return nil, incomplete
+	}
+	lines := strings.Split(strings.TrimSuffix(out, "\n"), "\n")
+	if len(lines) > maxAncestryCommits {
+		return nil, fmt.Sprintf("Merge indentation unavailable: ancestry exceeds %d commits.", maxAncestryCommits)
+	}
+	parents := make(map[string][]string, len(lines))
+	hasChild := make(map[string]bool, len(lines))
+	hasMerge := false
+	order := make([]string, 0, len(lines))
+	for _, line := range lines {
+		ids := strings.Fields(line)
+		if len(ids) == 0 {
+			return nil, incomplete
+		}
+		for _, sha := range ids {
+			if validateSHA(sha) != nil {
+				return nil, incomplete
+			}
+		}
+		if _, duplicate := parents[ids[0]]; duplicate {
+			return nil, incomplete
+		}
+		parents[ids[0]] = ids[1:]
+		hasMerge = hasMerge || len(ids) > 2
+		for _, parent := range ids[1:] {
+			hasChild[parent] = true
+		}
+		order = append(order, ids[0])
+	}
+	// Validate completeness AND child-before-parent order before assigning any
+	// depth. Missing parents cannot safely be treated as independent roots.
+	seen := make(map[string]bool, len(parents))
+	for i := len(order) - 1; i >= 0; i-- {
+		for _, parent := range parents[order[i]] {
+			if !seen[parent] {
+				return nil, incomplete
+			}
+		}
+		seen[order[i]] = true
+	}
+	if !hasMerge {
+		return nil, ""
+	}
+
+	// Visit the entire first-parent history before the other parents. Shared
+	// ancestors thus keep their existing level; only newly introduced ancestry
+	// gains a level. Older merges on the trunk retain their own nested members.
+	// Analyze independent tips separately: a feature ref advancing beyond a
+	// merged commit must not flatten that commit by visiting it before the merge.
+	// A shared commit appears once, at its deepest enclosing merge across tips.
+	// Plain unrelated roots contribute zero, never the preceding row's depth.
+	type pending struct {
+		sha   string
+		depth int
+	}
+	depths := make(map[string]int, len(parents))
+	visits := 0
+	for _, sha := range order {
+		if hasChild[sha] {
+			continue
+		}
+		local := make(map[string]int)
+		stack := []pending{{sha, 0}}
+		for len(stack) > 0 {
+			visits++
+			if visits > maxAncestryVisits {
+				return nil, "Merge indentation unavailable: ancestry analysis exceeds its work limit."
+			}
+			next := stack[len(stack)-1]
+			stack = stack[:len(stack)-1]
+			if _, visited := local[next.sha]; visited {
+				continue
+			}
+			local[next.sha] = next.depth
+			depths[next.sha] = max(depths[next.sha], next.depth)
+			ps := parents[next.sha]
+			for i := len(ps) - 1; i >= 0; i-- {
+				depth := next.depth
+				if i > 0 {
+					depth++
+				}
+				stack = append(stack, pending{ps[i], depth})
+			}
+		}
+	}
+	return depths, ""
 }
 
 func historyRef(ref string) bool {
@@ -227,6 +346,7 @@ func (r *Repository) History(ctx context.Context, snapshot Snapshot, offset, lim
 		commits = append(commits, Commit{
 			SHA: records[i], Subject: records[i+1], Author: records[i+2], AuthoredAt: records[i+3],
 			Labels: slices.Clone(snapshot.Labels[records[i]]), Relation: snapshot.Relations[records[i]],
+			MergeDepth: snapshot.mergeDepths[records[i]],
 		})
 	}
 	return commits, nil

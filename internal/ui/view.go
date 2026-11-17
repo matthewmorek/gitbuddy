@@ -13,7 +13,10 @@ import (
 	"github.com/matthewmorek/gitbuddy/internal/palette"
 )
 
-const horizontalPadding = 2
+const (
+	shellHorizontalPadding = 1
+	horizontalPadding      = 2
+)
 
 func line(text string, width int, fg, bg string, bold bool) string {
 	width = max(0, width)
@@ -181,7 +184,7 @@ func darkSurface(c palette.Colors) bool {
 func faded(c palette.Colors) palette.Colors {
 	return palette.Colors{Background: dim(c.Background), Panel: dim(c.Panel), Active: dim(c.Active), Selection: dim(c.Selection), Text: dim(c.Text), Muted: dim(c.Muted), Accent: dim(c.Accent)}
 }
-func (m *Model) contentWidth() int { return max(1, m.width-2*horizontalPadding) }
+func (m *Model) contentWidth() int { return max(1, m.width-2*shellHorizontalPadding) }
 func (m *Model) historyVisible() bool {
 	return m.width >= 100 || m.focus == "history"
 }
@@ -425,15 +428,47 @@ func (m *Model) historyHeader(width int, c palette.Colors, bg string) string {
 	return buttons + line("", remaining-ansi.StringWidth(status), c.Text, bg, false) + line(status, ansi.StringWidth(status), c.Muted, bg, false)
 }
 
+// List rows own their whole surface. Keep the edge gutters independent of
+// hierarchy and columns; sacrifice hierarchy, then padding, then gutters only
+// when the panel cannot fit them alongside content.
+type listRowLayout struct {
+	gutter, padding, indent, contentWidth int
+}
+
+func newListRowLayout(width, indent int) listRowLayout {
+	width = max(0, width)
+	gutter := min(2, max(0, (width-1)/2))
+	padding := min(2, max(0, (width-2*gutter-1)/2))
+	available := width - 2*(gutter+padding)
+	indent = min(max(0, indent), max(0, available-24))
+	return listRowLayout{gutter, padding, indent, available - indent}
+}
+
+func (r listRowLayout) render(content string, selected bool, indicator string, c palette.Colors, bg string) string {
+	marker := ""
+	if selected {
+		marker, bg = "▎", c.Selection
+	}
+	return line(marker, r.gutter, c.Accent, bg, false) +
+		line("", r.padding+r.indent, c.Text, bg, false) +
+		line(content, r.contentWidth, c.Text, bg, false) +
+		line("", r.padding, c.Text, bg, false) +
+		line(indicator, r.gutter, c.Muted, bg, false)
+}
+
 func (m *Model) pane(kind string, width, height int, c palette.Colors) string {
 	if m.mode == workingCopyMode {
 		return m.workingCopyPane(kind, width, height, c)
 	}
 	bg := m.paneBackground(kind, c)
-	inner := max(0, width-2*horizontalPadding)
+	padding := horizontalPadding
+	if kind == "history" {
+		padding = min(padding, max(0, width/2))
+	}
+	inner := max(0, width-2*padding)
 	rows := []string{line("", width, c.Text, bg, false)}
 	add := func(text string, bold bool) {
-		rows = append(rows, line("", horizontalPadding, c.Text, bg, false)+line(text, inner, c.Text, bg, bold)+line("", horizontalPadding, c.Text, bg, false))
+		rows = append(rows, line("", padding, c.Text, bg, false)+line(text, inner, c.Text, bg, bold)+line("", padding, c.Text, bg, false))
 	}
 	if kind == "history" {
 		add(m.historyHeader(inner, c, bg), false)
@@ -452,13 +487,17 @@ func (m *Model) pane(kind string, width, height int, c palette.Colors) string {
 			if selected {
 				rowBG = c.Selection
 			}
-			marker := " "
-			if selected {
-				marker = "▎"
-			}
-			indent := horizontalPadding
+			indent := 2 * min(max(0, commit.MergeDepth), max(0, width/2))
 			if m.snapshot.Diverged && commit.Relation == gitrepo.LocalOnly {
 				indent += 2
+			}
+			layout := newListRowLayout(width, indent)
+			indicator := ""
+			switch commit.Relation {
+			case gitrepo.LocalOnly:
+				indicator = "↑"
+			case gitrepo.Incoming:
+				indicator = "↓"
 			}
 			fg := c.Text
 			if commit.Relation == gitrepo.Incoming {
@@ -475,17 +514,15 @@ func (m *Model) pane(kind string, width, height int, c palette.Colors) string {
 			}
 			sha := commit.SHA[:min(8, len(commit.SHA))]
 			meta := sha + " • " + safeLine(commit.Author)
-			addCommitRow := func(left, right string, leftFG, rightFG string) {
-				contentWidth := max(0, inner-1-indent)
-				rows = append(rows,
-					line("", horizontalPadding, c.Text, bg, false)+
-						line(marker, 1, c.Accent, rowBG, false)+
-						line("", indent, c.Text, rowBG, false)+
-						columns(left, right, contentWidth, contentWidth/2, leftFG, rightFG, rowBG)+
-						line("", horizontalPadding, c.Text, bg, false))
+			addCommitRow := func(left, right string, leftFG, rightFG, indicator string) {
+				// On tiny panels omit the right field before losing all of the
+				// subject/SHA to the inter-column gap.
+				rightLimit := min(layout.contentWidth/2, max(0, layout.contentWidth-horizontalPadding-1))
+				content := columns(left, right, layout.contentWidth, rightLimit, leftFG, rightFG, rowBG)
+				rows = append(rows, layout.render(content, selected, indicator, c, bg))
 			}
-			addCommitRow(subject, relativeTime(commit.AuthoredAt, m.now), fg, c.Muted)
-			addCommitRow(meta, strings.Join(tags, " "), c.Muted, c.Muted)
+			addCommitRow(subject, relativeTime(commit.AuthoredAt, m.now), fg, c.Muted, indicator)
+			addCommitRow(meta, strings.Join(tags, " "), c.Muted, c.Muted, "")
 		}
 	} else {
 		if m.selectionOutsideHistory() {
@@ -557,7 +594,7 @@ func (m *Model) baseView(c palette.Colors) string {
 	}
 	footer = append(footer, padded(hints, c.Muted, hotkeyBackground))
 	separator := line("", w, c.Text, c.Background, false)
-	return lipgloss.NewStyle().Background(lipgloss.Color(c.Background)).Padding(1, horizontalPadding).Width(m.width).Height(m.height).MaxWidth(m.width).MaxHeight(m.height).Render(header + "\n" + separator + "\n" + panes + "\n" + separator + "\n" + strings.Join(footer, "\n"))
+	return lipgloss.NewStyle().Background(lipgloss.Color(c.Background)).Padding(1, shellHorizontalPadding).Width(m.width).Height(m.height).MaxWidth(m.width).MaxHeight(m.height).Render(header + "\n" + separator + "\n" + panes + "\n" + separator + "\n" + strings.Join(footer, "\n"))
 }
 
 func (m *Model) dialogWidth() int { return max(1, min(84, m.width-2*horizontalPadding)) }

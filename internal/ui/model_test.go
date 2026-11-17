@@ -344,44 +344,65 @@ func TestErrorDialogScrollsWrappedDiagnostics(t *testing.T) {
 
 func TestLayoutPaddingGapAndCompactPalette(t *testing.T) {
 	m, _ := setup(t, 3)
+	m.rows[0].Relation = gitrepo.LocalOnly
 	for _, mode := range []string{"dark", "light"} {
 		m.settings.Value.ColorMode = mode
-		lines := strings.Split(plain(m), "\n")
-		if len(lines) != 32 || strings.TrimSpace(lines[0]) != "" || strings.TrimSpace(lines[31]) != "" {
-			t.Fatalf("outer padding/height: %d", len(lines))
-		}
-		history := -1
-		for y, line := range lines {
-			if !strings.HasPrefix(line, "  ") || !strings.HasSuffix(line, "  ") {
-				t.Fatal("edge padding")
+		for _, width := range []int{120, 100, 99, 75} {
+			m.width = width
+			lines := strings.Split(plain(m), "\n")
+			if len(lines) != 32 || strings.TrimSpace(lines[0]) != "" || strings.TrimSpace(lines[31]) != "" {
+				t.Fatalf("outer padding/height: %d", len(lines))
 			}
-			if strings.Contains(line, " History  Working copy ") {
-				history = y
+			history := -1
+			for y, line := range lines {
+				if ansi.StringWidth(line) != width || !strings.HasPrefix(line, " ") || !strings.HasSuffix(line, " ") {
+					t.Fatal("edge padding")
+				}
+				if strings.Contains(line, " History  Working copy ") {
+					history = y
+				}
+				if strings.Contains(line, "commits loaded") || strings.Contains(line, "limit ") || strings.Contains(line, "Auto-fetch") {
+					t.Fatal("settings in footer")
+				}
 			}
-			if strings.Contains(line, "commits loaded") || strings.Contains(line, "limit ") || strings.Contains(line, "Auto-fetch") {
-				t.Fatal("settings in footer")
+			paneWidth := width - 2
+			if width >= 100 {
+				paneWidth /= 2
 			}
-		}
-		if history < 0 || strings.TrimSpace(lines[history+1][:59]) != "" || !strings.Contains(lines[history+2], "▎") {
-			t.Fatal("history gap/selection")
-		}
-		if !strings.HasPrefix(lines[1], "    Gitbuddy / repository") {
-			t.Fatal("header inset")
-		}
-		paneTop := history - 1
-		paneBottom := paneTop + m.paneHeight() - 1
-		if strings.TrimSpace(lines[paneTop-1]) != "" || strings.TrimSpace(lines[paneBottom+1]) != "" {
-			t.Fatal("missing separator above or below the panes")
-		}
-		boundary := horizontalPadding + m.contentWidth()/2
-		for _, text := range lines[paneTop : paneBottom+1] {
-			cells := []rune(text) // Fixture content uses single-cell characters.
-			if string(cells[boundary-horizontalPadding:boundary+horizontalPadding]) != "    " {
-				t.Fatal("adjacent pane insets must provide four empty columns")
+			if history < 0 || strings.TrimSpace(lines[history+1][:1+paneWidth]) != "" || !strings.Contains(lines[history+2], "▎") {
+				t.Fatal("history gap/selection")
 			}
-		}
-		if !strings.HasPrefix(lines[history], "     History  Working copy ") {
-			t.Fatal("history pane horizontal inset")
+			if !strings.HasPrefix(lines[1], "   Gitbuddy / repository") {
+				t.Fatal("header inset")
+			}
+			paneTop := history - 1
+			paneBottom := paneTop + m.paneHeight() - 1
+			if strings.TrimSpace(lines[paneTop-1]) != "" || strings.TrimSpace(lines[paneBottom+1]) != "" {
+				t.Fatal("missing separator above or below the panes")
+			}
+			if width >= 100 {
+				boundary := shellHorizontalPadding + m.contentWidth()/2
+				for i, text := range lines[paneTop : paneBottom+1] {
+					cells := []rune(text) // Fixture content uses single-cell characters.
+					want := "    "
+					if paneTop+i == history+2 {
+						want = "↑   " // The fixed relation gutter belongs to the list row.
+					}
+					if string(cells[boundary-horizontalPadding:boundary+horizontalPadding]) != want {
+						t.Fatal("adjacent pane gutters or insets changed")
+					}
+				}
+			}
+			if !strings.HasPrefix(lines[history], "    History  Working copy ") {
+				t.Fatal("history pane horizontal inset")
+			}
+			subject := []rune(lines[history+2])[1 : 1+paneWidth]
+			metadata := []rune(lines[history+3])[1 : 1+paneWidth]
+			if !strings.HasPrefix(string(subject), "▎   Commit 0") ||
+				!strings.HasPrefix(string(metadata), "▎   00000000") ||
+				string(subject[paneWidth-4:]) != "  ↑ " || string(metadata[paneWidth-4:]) != "    " {
+				t.Fatal("shell inset changed two-cell list gutters or two-cell content padding")
+			}
 		}
 	}
 	m.width, m.height = 80, 15
@@ -444,10 +465,10 @@ func TestIncomingAndDivergedLocalHistoryPresentation(t *testing.T) {
 		// marker/background still make keyboard focus clear.
 		incoming := find(rows, "incoming subject")
 		if !strings.Contains(incoming, coloredPrefix("incoming subject", c.Muted, c.Selection)) ||
-			!strings.Contains(incoming, line("▎", 1, c.Accent, c.Selection, false)) {
+			!strings.Contains(incoming, coloredPrefix("▎", c.Accent, c.Selection)) {
 			t.Fatalf("%s incoming styling lost dimming or selection", mode)
 		}
-		baseline := horizontalPadding + 1 + horizontalPadding
+		baseline := 4
 		if strings.Index(ansi.Strip(find(rows, "local subject")), "local subject") != baseline+2 ||
 			strings.Index(ansi.Strip(find(rows, "shared subject")), "shared subject") != baseline {
 			t.Fatal("only diverged local text should gain a two-cell indent")
@@ -771,13 +792,23 @@ func TestModeMouseHitboxesAndScopePalette(t *testing.T) {
 				if segment.mode == historyMode {
 					m.mode = workingCopyMode
 				}
-				m.Update(tea.MouseClickMsg{X: x + 4, Y: 4, Button: tea.MouseLeft})
+				m.Update(tea.MouseClickMsg{X: x + 3, Y: 4, Button: tea.MouseLeft})
 				if m.mode != segment.mode {
 					t.Fatalf("width %d: segment cell %d is not clickable", width, x)
 				}
 				generation := m.generation
-				if _, duplicate := m.Update(tea.MouseClickMsg{X: x + 4, Y: 4, Button: tea.MouseLeft}); duplicate != nil || generation != m.generation {
+				if _, duplicate := m.Update(tea.MouseClickMsg{X: x + 3, Y: 4, Button: tea.MouseLeft}); duplicate != nil || generation != m.generation {
 					t.Fatal("active mode click issued duplicate work")
+				}
+			}
+		}
+		segments := m.modeSegments()
+		for _, x := range []int{2, 3 + segments[len(segments)-1].end} {
+			for _, mode := range []viewMode{historyMode, workingCopyMode} {
+				m.mode = mode
+				generation := m.generation
+				if _, cmd := m.Update(tea.MouseClickMsg{X: x, Y: 4, Button: tea.MouseLeft}); cmd != nil || m.mode != mode || m.generation != generation {
+					t.Fatalf("width %d: outside button cell %d switched mode", width, x)
 				}
 			}
 		}
@@ -810,9 +841,9 @@ func TestModeMouseHitboxesAndScopePalette(t *testing.T) {
 		}
 	}
 	for _, invalid := range []tea.MouseClickMsg{
-		{X: 3, Y: 4, Button: tea.MouseLeft}, {X: 27, Y: 4, Button: tea.MouseLeft},
-		{X: 4, Y: 3, Button: tea.MouseLeft}, {X: 4, Y: 5, Button: tea.MouseLeft},
-		{X: 4, Y: 4, Button: tea.MouseRight},
+		{X: 2, Y: 4, Button: tea.MouseLeft}, {X: 26, Y: 4, Button: tea.MouseLeft},
+		{X: 3, Y: 3, Button: tea.MouseLeft}, {X: 3, Y: 5, Button: tea.MouseLeft},
+		{X: 3, Y: 4, Button: tea.MouseRight},
 	} {
 		m, _ := setup(t, 3)
 		if _, cmd := m.Update(invalid); cmd != nil || m.loading {
@@ -829,7 +860,7 @@ func TestModeMouseHitboxesAndScopePalette(t *testing.T) {
 		case "closing":
 			m.quit()
 		}
-		if _, cmd := m.Update(tea.MouseClickMsg{X: 4, Y: 4, Button: tea.MouseLeft}); cmd != nil || m.loading {
+		if _, cmd := m.Update(tea.MouseClickMsg{X: 3, Y: 4, Button: tea.MouseLeft}); cmd != nil || m.loading {
 			t.Fatalf("%s click leaked to hidden controls", state)
 		}
 	}

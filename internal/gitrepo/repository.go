@@ -69,12 +69,19 @@ type Snapshot struct {
 	Diverged bool
 	// Comparison is nil without an available upstream; zero counts mean in sync.
 	Comparison *UpstreamComparison
+	// AncestryWarning explains why merge indentation is unavailable. History
+	// remains usable, but never guesses membership from an incomplete walk.
+	AncestryWarning string
+	mergeDepths     map[string]int
 }
 
 type Commit struct {
 	SHA, Subject, Author, AuthoredAt string
 	Labels                           []string
 	Relation                         CommitRelation
+	// MergeDepth counts enclosing non-first-parent histories, independently of
+	// upstream relation styling and the loaded page size.
+	MergeDepth int
 }
 
 type ChangedFile struct {

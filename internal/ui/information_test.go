@@ -146,13 +146,13 @@ func TestCommitRowsAlignMetadataAndHighlightHEAD(t *testing.T) {
 			}
 		}
 		if !strings.Contains(ansi.Strip(first), "[HEAD] Commit title") ||
-			!strings.HasSuffix(ansi.Strip(first), "5 mins ago  ") ||
+			!strings.HasSuffix(ansi.Strip(first), "5 mins ago    ") ||
 			!strings.Contains(first, coloredPrefix("[HEAD]", m.semanticColor(c, "#facc15", "#a16207"), c.Selection)) {
 			t.Fatal("commit subject, yellow HEAD badge or right-aligned age missing")
 		}
 		sha := m.rows[0].SHA[:8]
 		if !strings.Contains(ansi.Strip(second), sha+" • alice") ||
-			!strings.HasSuffix(ansi.Strip(second), "[v0.1.2] [nightly]  ") ||
+			!strings.HasSuffix(ansi.Strip(second), "[v0.1.2] [nightly]    ") ||
 			!strings.Contains(second, coloredPrefix(sha, c.Muted, c.Selection)) ||
 			strings.Contains(ansi.Strip(second), "origin/main") {
 			t.Fatal("SHA/tags/author metadata layout is incorrect")
@@ -197,33 +197,51 @@ func TestNestedLabelsKeepEveryTerminalCellOnItsRowSurface(t *testing.T) {
 	for _, mode := range []string{"dark", "light"} {
 		m.settings.Value.ColorMode = mode
 		c := m.colors()
-		screen := uv.NewStyledString(m.View().Content).Lines(ansi.GraphemeWidth)
-		// Check the composed view, not just a styled fragment: both rows of
-		// selected and unselected entries, including all following whitespace.
-		for i := 0; i < 3; i++ {
-			bg := m.paneBackground("history", c)
-			if i == 0 {
-				bg = c.Selection
+		for _, width := range []int{120, 75} {
+			m.width = width
+			screen := uv.NewStyledString(m.View().Content).Lines(ansi.GraphemeWidth)
+			rightPane := "history"
+			paneWidth := width - 2
+			if width >= 100 {
+				rightPane = "details"
+				paneWidth /= 2
 			}
-			want := color.RGBAModel.Convert(lipgloss.Color(bg))
-			for _, y := range []int{6 + 2*i, 7 + 2*i} {
-				for x := 2 * horizontalPadding; x < horizontalPadding+m.contentWidth()/2-horizontalPadding; x++ {
-					cell := screen[y][x]
-					if cell.Style.Bg == nil || color.RGBAModel.Convert(cell.Style.Bg) != want {
-						t.Fatalf("%s commit %d cell %d,%d (%q): lost row background", mode, i, x, y, cell.Content)
+			for x, bg := range map[int]string{
+				0: c.Background, 1: m.paneBackground("history", c),
+				width - 2: m.paneBackground(rightPane, c), width - 1: c.Background,
+			} {
+				if actual := screen[3][x].Style.Bg; actual == nil ||
+					color.RGBAModel.Convert(actual) != color.RGBAModel.Convert(lipgloss.Color(bg)) {
+					t.Fatalf("%s width %d: shell margin at cell %d is not exactly one cell", mode, width, x)
+				}
+			}
+			// Check the composed view, not just a styled fragment: both rows of
+			// selected and unselected entries, including all following whitespace.
+			for i := 0; i < 3; i++ {
+				bg := m.paneBackground("history", c)
+				if i == 0 {
+					bg = c.Selection
+				}
+				want := color.RGBAModel.Convert(lipgloss.Color(bg))
+				for _, y := range []int{6 + 2*i, 7 + 2*i} {
+					for x := 1; x < 1+paneWidth; x++ {
+						cell := screen[y][x]
+						if cell.Style.Bg == nil || color.RGBAModel.Convert(cell.Style.Bg) != want {
+							t.Fatalf("%s commit %d cell %d,%d (%q): lost row background", mode, i, x, y, cell.Content)
+						}
 					}
 				}
 			}
-		}
-		// Each button's leading/trailing spaces have the same surface as its
-		// label, even after the outer pane and base view are composed.
-		for x := 4; x < 27; x++ {
-			bg := c.Background
-			if x < 13 {
-				bg = c.Selection
-			}
-			if actual := screen[4][x].Style.Bg; actual == nil || color.RGBAModel.Convert(actual) != color.RGBAModel.Convert(lipgloss.Color(bg)) {
-				t.Fatalf("%s mode button padding cell %d lost its background", mode, x)
+			// Each button's leading/trailing spaces have the same surface as its
+			// label, even after the outer pane and base view are composed.
+			for x := 3; x < 26; x++ {
+				bg := c.Background
+				if x < 12 {
+					bg = c.Selection
+				}
+				if actual := screen[4][x].Style.Bg; actual == nil || color.RGBAModel.Convert(actual) != color.RGBAModel.Convert(lipgloss.Color(bg)) {
+					t.Fatalf("%s mode button padding cell %d lost its background", mode, x)
+				}
 			}
 		}
 	}
@@ -355,7 +373,7 @@ func TestDetailsFilesStayOnSingleRowsWithReservedStatistics(t *testing.T) {
 		},
 	}
 	for _, width := range []int{1, 2, 5, 10, 20, 40, 84} {
-		m.width = width + 2*horizontalPadding*2
+		m.width = width + 2*(shellHorizontalPadding+horizontalPadding)
 		lines := m.detailLines()
 		// The three rows immediately before metadata must always be the files,
 		// regardless of how much subject/author wrapping tiny panes require.
@@ -413,9 +431,9 @@ func TestHistoryHeaderKeepsModesAndReadyStatusInSeparateCellBudgets(t *testing.T
 	m.changeScope(gitrepo.All)
 	c := m.colors()
 	screen := uv.NewStyledString(m.View().Content).Lines(ansi.GraphemeWidth)
-	for x := 4; x < 27; x++ {
+	for x := 3; x < 26; x++ {
 		want := c.Background
-		if x < 13 {
+		if x < 12 {
 			want = c.Selection
 		}
 		if actual := screen[4][x].Style.Bg; actual == nil || color.RGBAModel.Convert(actual) != color.RGBAModel.Convert(lipgloss.Color(want)) {
@@ -445,12 +463,13 @@ func TestActiveStatusSurvivesNarrowHistoryHeader(t *testing.T) {
 		{"tiny fetch", 20, "Fetching", false, false, "Fetching", true},
 		{"tiny loading", 20, "", true, false, "Loading", true},
 		{"tiny closing", 20, "Fetching", false, true, "Quit pending", true},
-		{"fetch below boundary", 44, "Fetching", false, false, "Fetching", true},
-		{"fetch at boundary", 45, "Fetching", false, false, "Fetching", false},
-		{"closing below boundary", 62, "Fetching", false, true, "waiting to quit", true},
-		{"closing at boundary", 63, "Fetching", false, true, "waiting to quit", false},
+		{"fetch below boundary", 42, "Fetching", false, false, "Fetching", true},
+		{"fetch at boundary", 43, "Fetching", false, false, "Fetching", false},
+		{"closing below boundary", 60, "Fetching", false, true, "waiting to quit", true},
+		{"closing at boundary", 61, "Fetching", false, true, "waiting to quit", false},
 		{"normal single pane", 75, "Fetching", false, false, "Fetching", false},
-		{"normal split panes", 120, "Fetching", false, true, "waiting to quit", true},
+		{"compact split panes", 100, "Fetching", false, true, "waiting to quit", true},
+		{"normal split panes", 120, "Fetching", false, true, "waiting to quit", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			m, _ := setup(t, 3)
@@ -570,10 +589,45 @@ func TestSharedFileRowsKeepStatusPositionsCountsAndColors(t *testing.T) {
 		{Path: "first", IndexStatus: "M", Stats: gitrepo.LineStats{Known: true, Added: 3}},
 		{Path: "second", WorktreeStatus: "D", Stats: gitrepo.LineStats{Known: true, Deleted: 17}},
 	}
+	m.working.path = "first"
 	pane := ansi.Strip(m.pane("history", 70, 10, c))
 	if !strings.Contains(pane, "M  first") || !strings.Contains(pane, " D second") ||
 		!strings.Contains(pane, "+3") || !strings.Contains(pane, "-17") {
 		t.Fatal("unselected working-copy rows lost their counts or status positions")
+	}
+	for _, mode := range []string{"dark", "light"} {
+		m.settings.Value.ColorMode = mode
+		c := m.colors()
+		for _, width := range []int{70, 24, 12, 9, 8, 5, 4, 3, 2, 1, 0} {
+			raw := m.pane("history", width, 10, c)
+			for _, row := range strings.Split(raw, "\n") {
+				if ansi.StringWidth(row) != width {
+					t.Fatalf("working-copy width %d: overflow %q", width, ansi.Strip(row))
+				}
+			}
+			screen := uv.NewStyledString(raw).Lines(ansi.GraphemeWidth)
+			for i := range m.working.entries {
+				bg := m.paneBackground("history", c)
+				if i == 0 {
+					bg = c.Selection
+				}
+				for x, cell := range screen[3+i] {
+					if cell.Style.Bg == nil ||
+						color.RGBAModel.Convert(cell.Style.Bg) != color.RGBAModel.Convert(lipgloss.Color(bg)) {
+						t.Fatalf("%s file %d cell %d: edge-to-edge surface lost", mode, i, x)
+					}
+				}
+			}
+			if width == 70 {
+				rows := strings.Split(ansi.Strip(raw), "\n")
+				if !strings.HasPrefix(rows[1], "   History ") ||
+					!strings.HasPrefix(rows[3], "▎   M  first") || !strings.HasSuffix(rows[3], "+3    ") ||
+					!strings.HasPrefix(rows[4], "     D second") || !strings.HasSuffix(rows[4], "-17    ") ||
+					strings.ContainsAny(rows[3]+rows[4], "↑↓") {
+					t.Fatal("working-copy gutters changed header, status positions or counts")
+				}
+			}
+		}
 	}
 }
 

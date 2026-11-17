@@ -45,6 +45,13 @@ or in the footer when the list is hidden or space is tight. A successful refresh
 shows **Ready · just now**, then a relative age such as **2 mins ago**. Failed
 refreshes do not advance that timestamp or mark retained content ready.
 
+List selections span the panel edge-to-edge. Rows reserve a two-cell gutter and
+two cells of content padding on each side; the header stays inset. Commit subjects
+show a neutral **↑** in the right gutter when waiting to push, or **↓** when
+waiting to merge from upstream. Shared/unrelated commits and file rows have no
+arrow. Gutters stay aligned across merge indentation and long metadata; on very
+narrow panels, hierarchy shrinks first, then padding and gutters as needed.
+
 Details start with the short SHA and subject, then the Git author and relative
 age, message body and changed files. File statuses and added/deleted line counts
 use semantic colors; zero counts are omitted and binary changes say `binary`
@@ -53,6 +60,18 @@ metadata, absolute dates, parents and the comparison follow the files. Merge
 files are compared with the **first parent**; root commits list added files.
 There is no branch graph or full patch viewer.
 Working-copy patches are separate from commit details.
+
+Commits introduced by a merge's non-first parents are indented two columns below
+that merge; nested merges add another level. Shared ancestry retains its earlier
+level within each tip's history, and independent branch roots are not merge
+members. When several tips share a commit, its deepest enclosing merge determines
+its indentation. Both commit lines move together; indentation shrinks on narrow
+terminals to leave room for content.
+Membership is frozen with the history snapshot, independent of page boundaries.
+Only ancestry metadata is read beyond the loaded-history cap, up to 100,000
+commits and one million ancestry visits across independent tips. Shallow,
+incomplete or larger analyses remain browsable without merge indentation and show
+a warning rather than guessing which ancestors are shared.
 
 Incoming commits—reachable from the current branch's upstream but not from
 HEAD—use dimmed text. If both sides contain commits absent from the other,

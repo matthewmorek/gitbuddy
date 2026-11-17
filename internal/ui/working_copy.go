@@ -328,11 +328,15 @@ func (m *Model) renderFileDetails(c palette.Colors, bg string) string {
 
 func (m *Model) workingCopyPane(kind string, width, height int, c palette.Colors) string {
 	bg := m.paneBackground(kind, c)
-	inner := max(0, width-2*horizontalPadding)
+	padding := horizontalPadding
+	if kind == "history" {
+		padding = min(padding, max(0, width/2))
+	}
+	inner := max(0, width-2*padding)
 	rows := []string{line("", width, c.Text, bg, false)}
 	add := func(text string, fg, surface string) {
-		rows = append(rows, line("", horizontalPadding, c.Text, bg, false)+
-			line(text, inner, fg, surface, false)+line("", horizontalPadding, c.Text, bg, false))
+		rows = append(rows, line("", padding, c.Text, bg, false)+
+			line(text, inner, fg, surface, false)+line("", padding, c.Text, bg, false))
 	}
 	if kind == "history" {
 		add(m.historyHeader(inner, c, bg), c.Text, bg)
@@ -349,14 +353,15 @@ func (m *Model) workingCopyPane(kind string, width, height int, c palette.Colors
 		}
 		for i := w.top; i < len(w.entries) && len(rows) < height-1; i++ {
 			e := w.entries[i]
-			marker, surface := " ", bg
-			if e.Path == w.path {
-				marker, surface = "▎", c.Selection
+			selected, surface := e.Path == w.path, bg
+			if selected {
+				surface = c.Selection
 			}
-			add(line(marker, 1, c.Accent, surface, false)+"  "+
-				m.renderFileRow(fileRow{path: e.Path, oldPath: e.OldPath,
-					index: e.IndexStatus, worktree: e.WorktreeStatus, untracked: e.Untracked,
-					stats: e.Stats}, max(0, inner-3), c, surface), c.Text, surface)
+			layout := newListRowLayout(width, 0)
+			content := m.renderFileRow(fileRow{path: e.Path, oldPath: e.OldPath,
+				index: e.IndexStatus, worktree: e.WorktreeStatus, untracked: e.Untracked,
+				stats: e.Stats}, layout.contentWidth, c, surface)
+			rows = append(rows, layout.render(content, selected, "", c, bg))
 		}
 	} else {
 		if state := m.fileState(); state != "" {
