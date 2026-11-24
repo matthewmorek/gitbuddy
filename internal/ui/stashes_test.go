@@ -57,9 +57,9 @@ func TestSafePullPalettePreferenceAndMutationLifecycle(t *testing.T) {
 			}
 		}
 	}
-	m.closeDialog()
+	m.modals.dismiss()
 	m.openDialog("settings", "automatic stash")
-	press(m, tea.KeyEnter, "")
+	press(m, tea.KeyRight, "")
 	if preferences.Load(m.settings.Directory).Value.AutoStashOnSafePull {
 		t.Fatal("Safe pull preference did not persist")
 	}
@@ -67,7 +67,7 @@ func TestSafePullPalettePreferenceAndMutationLifecycle(t *testing.T) {
 	if cmd := press(m, tea.KeyEnter, ""); m.operation != "" || len(repo.safePulls) != 0 {
 		t.Fatalf("dirty clean-only Safe pull started: %v", cmd != nil)
 	}
-	m.closeDialog()
+	m.modals.dismiss()
 	m.status.Dirty, repo.status.Dirty = false, false
 	m.openDialog("commands", "safe pull")
 	result := gitActionResult[mutationMsg](t, press(m, tea.KeyEnter, ""))
@@ -100,12 +100,12 @@ func TestStashesViewAndConfirmationFreezeEntry(t *testing.T) {
 	msg := gitActionResult[stashesMsg](t, press(m, '3', "3"))
 	m.Update(old)
 	m.Update(msg)
-	if !strings.Contains(plain(m), "Cannot read fixture stash log") || press(m, 'a', "a") != nil || m.dialog != "" {
+	if !strings.Contains(plain(m), "Cannot read fixture stash log") || press(m, 'a', "a") != nil || m.modalKind() != "" {
 		t.Fatal("stash read error is missing or actionable")
 	}
 	repo.stashErr = nil
 	m.Update(gitActionResult[stashesMsg](t, m.refreshStashes()))
-	if !strings.Contains(plain(m), "No stashes") || press(m, 'd', "d") != nil || m.dialog != "" {
+	if !strings.Contains(plain(m), "No stashes") || press(m, 'd', "d") != nil || m.modalKind() != "" {
 		t.Fatal("empty stash list must not apply anything")
 	}
 	date := time.Date(2026, 11, 13, 12, 0, 0, 0, time.Local)
@@ -143,7 +143,7 @@ func TestStashesViewAndConfirmationFreezeEntry(t *testing.T) {
 	press(m, tea.KeyEnter, "")
 	press(m, 'a', "a")
 	press(m, 'd', "d")
-	if !strings.Contains(plain(m), "loose.bin") || m.dialog != "" {
+	if !strings.Contains(plain(m), "loose.bin") || m.modalKind() != "" {
 		t.Fatal("narrow Enter did not open a read-only preview")
 	}
 	press(m, tea.KeyEscape, "")
@@ -159,16 +159,16 @@ func TestStashesViewAndConfirmationFreezeEntry(t *testing.T) {
 		t.Fatal("delete confirmation not visible")
 	}
 	press(m, tea.KeyRight, "")
-	press(m, tea.KeyEscape, "")
-	if len(repo.applied)+len(repo.deleted) != 0 || m.operation != "" {
-		t.Fatal("cancel started a mutation")
+	press(m, tea.KeyBackspace, "")
+	if len(repo.applied)+len(repo.deleted) != 0 || m.operation != "" || m.modalKind() != "" || m.focus != "history" {
+		t.Fatal("Backspace did not safely close the direct confirmation")
 	}
 	press(m, 'a', "a")
 	repo.stashRows = []gitrepo.Stash{latest}
 	m.Update(gitActionResult[stashesMsg](t, m.refreshStashes()))
 	press(m, tea.KeyRight, "")
 	result := gitActionResult[mutationMsg](t, press(m, tea.KeyEnter, ""))
-	if len(repo.applied) != 1 || !repo.applied[0].SameEntry(prev) || m.dialog != "" {
+	if len(repo.applied) != 1 || !repo.applied[0].SameEntry(prev) || m.modalKind() != "" {
 		t.Fatalf("wrong stash applied: %v", repo.applied)
 	}
 	generation := m.generation

@@ -96,7 +96,8 @@ diagnostics or hide an ongoing operation. Update actions remain in the palette
 after their notices disappear.
 
 **Maximum commits** defaults to **100** and caps the total loaded history, not
-each page. Change it through Ctrl+P → Maximum commits. Changes apply immediately,
+each page. Choose **Ctrl+P → Maximum commits**, then use **← / →** to step by one
+or **Enter** to type an exact value. Changes apply immediately,
 retaining selected details even when the new limit excludes that commit.
 Larger limits load in pages of up to 200 commits, using frozen commit tips so a
 fetch cannot shift subsequent pages.
@@ -175,10 +176,10 @@ available separately in the command palette.
 
 Automatic fetching defaults to **every five minutes while Gitbuddy is open**,
 with an initial fetch after local history renders. Disable it or change the
-interval in **Ctrl+P → Settings**. Fetch failures show a temporary notification;
-use **Show errors and warnings** for the complete saved message. Refresh-ready
-times describe successfully loaded local data, not remote freshness. Manual
-refresh reads local state without fetching.
+interval under **Fetch** in **Ctrl+P → Open settings**. Fetch failures show a
+temporary notification; use **Show errors and warnings** for the complete saved
+message. Refresh-ready times describe successfully loaded local data, not remote
+freshness. Manual refresh reads local state without fetching.
 
 Fetch uses the repository's existing remotes and branch mappings. `--all` means
 eligible remotes—not necessarily all branches in a single-branch clone.
@@ -248,9 +249,11 @@ that backup, and only if the ref still points to that ID.
 ### Stash actions
 
 **Ctrl+P → Stash all** saves staged, unstaged and untracked changes, excluding
-ignored files. Enter an optional note and press **Enter** to stash, or **Esc**
-to cancel. Safe pull, Stash all and Apply stash refuse unmerged files, in-progress Git
-operations, submodules, and unsupported paths such as untracked nested repos.
+ignored files. Enter an optional note and press **Enter** to stash. Press
+**Backspace** on an empty note to return to Commands, or **Esc** to dismiss
+the palette without stashing. Safe pull, Stash all and Apply stash refuse
+unmerged files, in-progress Git operations, submodules, and unsupported paths
+such as untracked nested repos.
 Git stash cannot reliably restore a staged deletion with a recreated untracked
 file at the same path; move that replacement aside before continuing. Stash all
 also refuses to clear the checkout if restoring a tracked path would overwrite
@@ -271,12 +274,13 @@ the tracked counts. File rows show statuses, renames, line counts or `binary`.
 
 From the focused stash list, **a** opens **Apply stash?** and **d** opens
 **Delete stash?**. Both show the selected note and date and default to
-**Cancel**. Use **Tab** or **→**, then **Enter**, to confirm; **Esc** cancels
-regardless of the highlighted option. Apply attempts to restore the index split
-and always keeps the stash. It checks destination files byte for byte, including
-for recovery backups, and refuses if destinations are obstructed or cannot be
-verified. Delete removes only the selected entry, without applying it. Gitbuddy
-does not stage files manually, commit, push, abort operations, or resolve conflicts.
+**Cancel**. Use **Tab** or **→**, then **Enter**, to confirm; **Backspace** or
+**Esc** cancels regardless of the highlighted option. Apply attempts to restore
+the index split and always keeps the stash. It checks destination files byte for
+byte, including for recovery backups, and refuses if destinations are obstructed
+or cannot be verified. Delete removes only the selected entry, without applying
+it. Gitbuddy does not stage files manually, commit, push, abort operations, or
+resolve conflicts.
 
 If the shared stack changed, refresh and confirm again. For multiple entries
 with the same object ID within the stack, use Git to select the intended entry.
@@ -301,6 +305,22 @@ releases on process exit, but Git's own locks may still need investigation; make
 sure no Git process is running first.
 
 ## Preferences and themes
+
+Choose **Ctrl+P → Open settings** to browse or search six preferences grouped by
+**Appearance**, **Fetch**, **Pull**, and **History**. The Commands palette also
+finds individual settings; choosing one opens unfiltered Settings with that row
+selected. The selected row shows its description and available keys below the list.
+
+- **↑ / ↓** selects a row. **← / →** toggles switches, cycles themes and color
+  modes, or changes a number by one within its allowed range.
+- On **Theme**, press **Enter** to open a searchable list of bundled and custom
+  themes. On either numeric row, press **Enter** to type an exact value.
+  Press **Enter** again to apply and return to the same row; invalid numbers
+  stay in the editor with an explanation.
+- **Backspace** edits nonempty text, even when deleting the last character.
+  Press it on an empty field or a page with no text field to go back one page;
+  the previous search and selection are preserved. Empty Commands stays open.
+  **Esc** closes the whole palette and restores focus to the underlying pane.
 
 Preferences live in `$XDG_CONFIG_HOME/gitbuddy/config.json`, or
 `~/.config/gitbuddy/config.json` when `XDG_CONFIG_HOME` is unset or empty:
@@ -327,9 +347,10 @@ and remove the `autoStashOnSafePull` key before launching it; older releases
 treat unknown keys as invalid and block saving.
 
 Valid changes apply to the running app even if persistence fails. Settings are
-saved atomically when safe. Invalid or externally modified configuration
-produces a warning rather than silently overwriting your file; repair it
-externally and restart.
+saved atomically when safe. If saving fails, Settings warns that the change is
+for this session only; use **Ctrl+P → Show errors and warnings** for the full
+message. Invalid or externally modified configuration is not overwritten;
+repair it externally and restart.
 
 Bundled palettes: OpenCode, Tokyo Night and Catppuccin, in dark and light modes.
 Custom themes go in the **Gitbuddy** config directory's `themes/*.json`; the

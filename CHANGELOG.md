@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.4.1] — 2026-11-24
+
+- **Open settings** now shows your preferences. Use **← / →** to change values
+  in place.
+- **Backspace** edits text first, then returns to the parent page and restores
+  its search and selection. **Esc** closes the whole modal.
+- Contextual help and keyboard shortcuts are easier to tell apart.
+
+Existing configuration and defaults are unchanged.
+
 ## [0.4.0] — 2026-11-24
 
 - Press `3` for **Stashes**, the third tab. Browse shared stashes and Safe pull

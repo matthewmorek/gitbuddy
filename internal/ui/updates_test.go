@@ -85,8 +85,8 @@ func TestStartupUpdateCheckIsDeferredQuietAndDoesNotStealFocus(t *testing.T) {
 		t.Fatal("duplicate startup check")
 	}
 	m.Update(updateResult(t, command))
-	if service.checks != 1 || service.installs != 0 || m.dialog != "commands" ||
-		m.input.Value() != "theme" || m.focus != "details" || m.selected != selected {
+	if service.checks != 1 || service.installs != 0 || m.modalKind() != modalCommands ||
+		m.modalInput() != "theme" || m.focus != "details" || m.selected != selected {
 		t.Fatal("background check changed navigation, focus, or installed anything")
 	}
 	if view := plain(m); !strings.Contains(view, "Gitbuddy 0.1.1 available") ||
@@ -135,7 +135,7 @@ func TestPaletteInstallStartsWithSingleEnterAndRestartStaysExplicit(t *testing.T
 	m, service := availableUpdate(t)
 	m.openDialog("commands", "Install update")
 	command := press(m, tea.KeyEnter, "")
-	if !m.updates.installing || service.installs != 0 || m.dialog != "" {
+	if !m.updates.installing || service.installs != 0 || m.modalKind() != "" {
 		t.Fatal("installation did not stay behind the command boundary")
 	}
 	m.Update(updateInstallMsg{request: m.updates.request - 1, version: "stale"})
@@ -144,7 +144,7 @@ func TestPaletteInstallStartsWithSingleEnterAndRestartStaysExplicit(t *testing.T
 	}
 	m.Update(updateResult(t, command))
 	if service.installs != 1 || m.updates.installed != "0.1.1" ||
-		m.RestartRequested() || m.closing || m.dialog != "" {
+		m.RestartRequested() || m.closing || m.modalKind() != "" {
 		t.Fatal("installation unexpectedly restarted or stole focus")
 	}
 	if !strings.Contains(plain(m), "installed") || m.installUpdate() != nil {
@@ -152,7 +152,7 @@ func TestPaletteInstallStartsWithSingleEnterAndRestartStaysExplicit(t *testing.T
 	}
 	m.openDialog("commands", "Restart")
 	command = press(m, tea.KeyEnter, "")
-	if command == nil || command() != tea.Quit() || !m.RestartRequested() || m.dialog != "" {
+	if command == nil || command() != tea.Quit() || !m.RestartRequested() || m.modalKind() != "" {
 		t.Fatal("single Enter on Restart did not directly request orderly restart")
 	}
 }
@@ -207,7 +207,7 @@ func TestPaletteUpdateCommandsStayVisibleAndDisabledUntilReady(t *testing.T) {
 				}
 				request, installing := m.updates.request, m.updates.installing
 				press(m, tea.KeyEnter, "") // May schedule notification expiry, not installation.
-				if m.dialog != "commands" || m.updates.request != request || m.updates.installing != installing ||
+				if m.modalKind() != modalCommands || m.updates.request != request || m.updates.installing != installing ||
 					service.installs != 0 || m.RestartRequested() || m.closing {
 					t.Fatalf("disabled %s performed an action", title)
 				}
@@ -280,23 +280,27 @@ func TestInstallCompletionPreservesPaletteQuitSelection(t *testing.T) {
 	if !restartDisabled {
 		t.Error("Restart must remain in the palette, disabled until installation succeeds")
 	}
+	selectedID := func() string {
+		options := m.options()
+		return options[m.modals.current().selection(options)].id
+	}
 	for range len(m.options()) {
-		if m.options()[m.choice].id == "quit" {
+		if selectedID() == "quit" {
 			break
 		}
 		press(m, tea.KeyDown, "")
 	}
-	if options := m.options(); options[m.choice].id != "quit" || options[len(options)-1].id != "quit" {
+	if options := m.options(); selectedID() != "quit" || options[len(options)-1].id != "quit" {
 		t.Fatal("could not select the final Quit action")
 	}
 
 	m.Update(updateResult(t, command))
-	if m.dialog != "commands" || m.input.Value() != "" {
+	if m.modalKind() != modalCommands || m.modalInput() != "" {
 		t.Fatal("installation changed the open, unfiltered command palette")
 	}
 	options := m.options()
-	if options[m.choice].id != "quit" {
-		t.Errorf("installation changed Quit selection to %q", options[m.choice].id)
+	if selectedID() != "quit" {
+		t.Errorf("installation changed Quit selection to %q", selectedID())
 	}
 	restartEnabled := false
 	for _, option := range options {

@@ -75,14 +75,20 @@ Browsing changed files or saved stashes never stages or edits files.
 | Page Up / Page Down | Move a page                                               |
 | Tab / Shift+Tab     | Switch pane                                               |
 | Enter               | Open details on a narrow terminal; apply a palette choice |
-| Escape              | Close a dialog or return to the active mode's list        |
+| Backspace           | Edit modal text; go back when empty or on a non-text page |
+| Escape              | Close all modal pages or return to the active mode's list  |
 | r                   | Refresh local repository and the active preview         |
 | a / d               | Confirm apply / delete from the focused Stashes list    |
 | q                   | Quit outside text input                                   |
 | Ctrl+C              | Close a dialog; otherwise request orderly quit            |
 
+Open **Ctrl+P → Open settings** to browse preferences, or search for a setting by
+name to jump straight to its row. Use **↑ / ↓** to select and **← / →** to
+change the value. **Enter** opens the searchable theme picker or lets you type
+an exact number. Changes apply immediately. See [Preferences and themes](docs/USAGE.md#preferences-and-themes).
+
 Automatic fetching starts after local history renders and repeats **every five
-minutes** by default. Disable it or change the interval in **Ctrl+P → Settings**.
+minutes** by default. Change this in the **Fetch** group in Settings.
 Pulling always requires choosing an explicit command. **Safe pull** tries only a
 fast-forward and can temporarily stash local changes. It removes the backup after
 a verified restore and keeps it in **Stashes** if recovery is needed. Use

@@ -308,11 +308,11 @@ func TestCommandPaletteCapturesTypingAndRestoresSelection(t *testing.T) {
 	m.openDialog("commands", "")
 	press(m, 'j', "j")
 	press(m, 'q', "q")
-	if m.selected != selected || m.closing || m.input.Value() != "jq" {
+	if m.selected != selected || m.closing || m.modalInput() != "jq" {
 		t.Fatal("typing leaked to global shortcuts")
 	}
 	press(m, tea.KeyEscape, "")
-	if m.dialog != "" || m.focus != "details" || m.selected != selected {
+	if m.modalKind() != "" || m.focus != "details" || m.selected != selected {
 		t.Fatal("modal lost focus/selection")
 	}
 	m.openDialog("commands", "settings theme")
@@ -321,12 +321,16 @@ func TestCommandPaletteCapturesTypingAndRestoresSelection(t *testing.T) {
 		t.Fatalf("category search: %#v", options)
 	}
 	press(m, tea.KeyEnter, "")
-	if m.dialog != "themes" {
+	if m.modalKind() != modalSettings || m.modalInput() != "" {
+		t.Fatal("Theme command did not open unfiltered Settings")
+	}
+	press(m, tea.KeyEnter, "")
+	if m.modalKind() != modalThemes {
 		t.Fatal("theme picker did not open")
 	}
-	m.input.SetValue("catppuccin")
+	modalType(m, "catppuccin")
 	press(m, tea.KeyEnter, "")
-	if m.settings.Value.Theme != "catppuccin" || preferences.Load(m.settings.Directory).Value.Theme != "catppuccin" {
+	if m.modalKind() != modalSettings || m.settings.Value.Theme != "catppuccin" || preferences.Load(m.settings.Directory).Value.Theme != "catppuccin" {
 		t.Fatal("theme did not persist")
 	}
 }
@@ -920,13 +924,13 @@ func TestModeKeysKeepNavigationSeparateAndDialogsConsumeInput(t *testing.T) {
 	if cmd := press(m, '2', "2"); cmd != nil || m.generation != generation || m.focus != "details" {
 		t.Fatal("active mode shortcut is not a no-op")
 	}
-	for _, dialog := range []string{"commands", "max", "interval", "errors"} {
-		m.openDialog(dialog, "")
+	for _, page := range []modalPage{{kind: modalCommands}, {kind: modalNumber, setting: settingMax}, {kind: modalNumber, setting: settingInterval}, {kind: modalErrors}} {
+		m.modals.push(page, "")
 		press(m, '1', "1")
 		press(m, '2', "2")
 		press(m, '3', "3")
 		if m.mode != workingCopyMode || m.focus != "details" {
-			t.Fatalf("%s leaked mode shortcuts", dialog)
+			t.Fatalf("%s leaked mode shortcuts", page.kind)
 		}
 		press(m, tea.KeyEscape, "")
 	}

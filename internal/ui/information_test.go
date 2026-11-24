@@ -66,12 +66,12 @@ func TestMinuteRedrawIsIndependentOfGitAndNavigation(t *testing.T) {
 	selected, generation, request, reads := m.selected, m.generation, m.detailRequest, repo.readLimit
 	_, next := m.Update(minuteMsg(now.Add(time.Minute)))
 	if next == nil || m.now != now.Add(time.Minute) || m.selected != selected ||
-		m.focus != "details" || m.dialog != "commands" || m.input.Value() != "theme" ||
+		m.focus != "details" || m.modalKind() != modalCommands || m.modalInput() != "theme" ||
 		m.generation != generation || m.detailRequest != request || repo.readLimit != reads ||
 		repo.fetched != 0 || repo.pulled != 0 {
 		t.Fatal("clock tick refreshed Git or disturbed navigation")
 	}
-	m.closeDialog()
+	m.modals.dismiss()
 	if !strings.Contains(plain(m), "1 min ago") {
 		t.Fatal("minute tick did not redraw commit ages")
 	}

@@ -5,7 +5,6 @@ import (
 	"strings"
 	"time"
 
-	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
@@ -57,7 +56,7 @@ func (m *Model) semanticColor(c palette.Colors, dark, light string) string {
 	if darkSurface(c) {
 		color = dark
 	}
-	if m.dialog != "" {
+	if m.modals.current() != nil {
 		color = dim(color)
 	}
 	return color
@@ -238,7 +237,7 @@ func (m *Model) paneWidth() int {
 }
 func (m *Model) detailLines() []string {
 	c := m.colors()
-	if m.dialog != "" {
+	if m.modals.current() != nil {
 		c = faded(c)
 	}
 	return m.detailContent(c, m.paneBackground("details", c))
@@ -622,8 +621,15 @@ func (m *Model) baseView(c palette.Colors) string {
 	return lipgloss.NewStyle().Background(lipgloss.Color(c.Background)).Padding(1, shellHorizontalPadding).Width(m.width).Height(m.height).MaxWidth(m.width).MaxHeight(m.height).Render(header + "\n" + separator + "\n" + panes + "\n" + separator + "\n" + strings.Join(footer, "\n"))
 }
 
-func (m *Model) dialogWidth() int  { return max(1, min(84, m.width-2*horizontalPadding)) }
-func (m *Model) dialogHeight() int { return max(1, m.height-max(1, m.height/6)-1) }
+func (m *Model) dialogWidth() int { return max(1, min(84, m.width-2*horizontalPadding)) }
+
+func (m *Model) dialogTop() int {
+	// Favor room for the grouped rows and help over blank space above them.
+	const preferredPanelHeight = 22
+	return max(1, min(m.height/6, m.height-preferredPanelHeight-1))
+}
+
+func (m *Model) dialogHeight() int { return max(1, m.height-m.dialogTop()-1) }
 
 func errorColor(c palette.Colors) string {
 	if darkSurface(c) {
@@ -681,142 +687,19 @@ func (m *Model) footerNoticeLines() []string {
 	return lines
 }
 
-// Rendering and keyboard scrolling share the same wrapped diagnostic lines.
-func (m *Model) errorLines() []string {
-	text := safeText(m.warnings())
-	if text == "" {
-		text = "No errors or warnings"
-	}
-	return strings.Split(ansi.Wrap(text, messageWidth(max(1, m.dialogWidth()-2*horizontalPadding)), ""), "\n")
-}
-
-func (m *Model) dialogView(c palette.Colors, width, height int) string {
-	inner := max(1, width-2*horizontalPadding)
-	rows := []string{}
-	add := func(text string) { rows = append(rows, line(text, inner, c.Text, c.Panel, false)) }
-	title := "Commands"
-	switch m.dialog {
-	case "settings":
-		title = "Settings"
-	case "themes":
-		title = "Theme"
-	case "modes":
-		title = "Color mode"
-	case "max":
-		title = "Maximum commits"
-	case "interval":
-		title = "Fetch interval (minutes)"
-	case "errors":
-		title = "Errors and warnings"
-	case "stash-note":
-		title = "Stash all"
-	case "stash-apply":
-		title = "Apply stash?"
-	case "stash-delete":
-		title = "Delete stash?"
-	}
-	rows = append(rows, line(title, inner, c.Text, c.Panel, true))
-	if m.dialog == "stash-apply" || m.dialog == "stash-delete" {
-		add(stashSubject(m.confirmedStash))
-		add(stashMetadata(m.confirmedStash))
-		confirm, effect := "Apply", "Restore the saved changes and keep the stash."
-		if m.dialog == "stash-delete" {
-			confirm, effect = "Delete", "Remove the selected stash without applying it."
-		}
-		add(effect)
-		button := func(label string, at int) string {
-			fg, bg, marker := c.Muted, c.Panel, " "
-			if at == m.choice {
-				fg, bg, marker = c.Text, c.Selection, "▎"
-			}
-			return line(marker, 1, c.Accent, bg, false) + line(" "+label+" ", len(label)+2, fg, bg, at == m.choice)
-		}
-		add(button("Cancel", 0) + "  " + button(confirm, 1))
-		add("←→ Choose · Enter Select · Esc Cancel")
-	} else if m.dialog == "errors" {
-		lines := m.errorLines()
-		start := min(m.errorTop, max(0, len(lines)-1))
-		end := min(len(lines), start+max(1, height-6))
-		rows = append(rows, messageRows(lines[start:end], inner, c, c.Panel, errorColor(c))...)
-		add("Esc Close · ↑↓ Scroll")
-	} else {
-		input := m.input
-		input.SetWidth(max(1, inner-1))
-		styles := textinput.DefaultStyles(m.dark)
-		styles.Focused.Text = lipgloss.NewStyle().Foreground(lipgloss.Color(c.Text)).Background(lipgloss.Color(c.Panel))
-		styles.Focused.Placeholder = lipgloss.NewStyle().Foreground(lipgloss.Color(c.Muted)).Background(lipgloss.Color(c.Panel))
-		styles.Cursor.Color = lipgloss.Color(c.Accent)
-		input.SetStyles(styles)
-		add(input.View())
-		add("")
-		if m.dialog == "max" || m.dialog == "interval" {
-			add("Enter a positive whole number")
-			add("Enter Save · Esc Cancel")
-		} else if m.dialog == "stash-note" {
-			add("Saves staged, unstaged and untracked changes, excluding ignored files")
-			if disabled := m.stashDisabled(true); disabled != "" {
-				add(disabled + " · Esc Cancel")
-			} else {
-				add("Enter Stash · Esc Cancel")
-			}
-		} else {
-			options := m.options()
-			choice := min(m.choice, max(0, len(options)-1))
-			hint := "↑↓ Navigate · Enter Select · Esc Close"
-			hintRows := []string{line(hint, inner, c.Text, c.Panel, false)}
-			if len(options) > 0 && options[choice].disabled != "" {
-				lines := strings.Split(ansi.Wrap(safeText(options[choice].disabled), messageWidth(inner), ""), "\n")
-				lines = lines[:min(len(lines), max(1, min(4, height-9)))]
-				hintRows = messageRows(lines, inner, c, c.Panel, errorColor(c))
-			}
-			visible := max(1, min(12, height-2-len(rows)-1-len(hintRows)))
-			top := max(0, choice-visible+1)
-			for i := top; i < len(options) && i < top+visible; i++ {
-				a := options[i]
-				bg := c.Panel
-				marker := " "
-				if i == choice {
-					bg = c.Selection
-					marker = "▎"
-				}
-				fg, markerFG := c.Text, c.Accent
-				if a.disabled != "" {
-					fg, markerFG = c.Muted, c.Muted
-				}
-				suffix := a.category
-				if a.value != "" {
-					suffix = a.value + " · " + suffix
-				}
-				if a.shortcut != "" {
-					suffix = a.shortcut + " · " + suffix
-				}
-				suffix = ansi.Truncate(suffix, max(1, inner*45/100), "…")
-				left := max(0, inner-2-ansi.StringWidth(suffix))
-				rows = append(rows, line(marker, 1, markerFG, bg, false)+line(strings.Repeat(" ", horizontalPadding)+safeLine(a.title), left, fg, bg, false)+line(" "+suffix, inner-left-1, c.Muted, bg, false))
-			}
-			if len(options) == 0 {
-				add("No matching commands")
-			}
-			add("")
-			rows = append(rows, hintRows...)
-		}
-	}
-	return lipgloss.NewStyle().Background(lipgloss.Color(c.Panel)).Padding(1, horizontalPadding).Width(width).MaxWidth(width).MaxHeight(height).Render(strings.Join(rows, "\n"))
-}
-
 func (m *Model) View() tea.View {
 	c := m.colors()
 	baseColors := c
-	if m.dialog != "" {
+	page := m.modals.current()
+	if page != nil {
 		baseColors = faded(c)
 	}
 	content := m.baseView(baseColors)
-	if m.dialog != "" {
+	if page != nil {
 		w := m.dialogWidth()
-		y := max(1, m.height/6)
 		h := m.dialogHeight()
 		modal := m.dialogView(c, w, h)
-		content = lipgloss.NewCompositor(lipgloss.NewLayer(content), lipgloss.NewLayer(modal).X((m.width-w)/2).Y(y).Z(1)).Render()
+		content = lipgloss.NewCompositor(lipgloss.NewLayer(content), lipgloss.NewLayer(modal).X((m.width-w)/2).Y(m.dialogTop()).Z(1)).Render()
 	}
 	view := tea.NewView(content)
 	view.AltScreen = true

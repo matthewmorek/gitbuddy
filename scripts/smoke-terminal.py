@@ -235,13 +235,15 @@ def exercise(root, repo, width, mode, executable, isolated):
         send(b"\x10")  # Ctrl+P
         assert b"Commands" in output, "Command palette did not render"
         send(b"settings theme")
-        send(b"\r")
+        send(b"\r")  # Open Settings with Theme selected.
+        send(b"\r")  # Browse themes.
         send(b"catppuccin")
         send(b"\r", 0.3)
         saved = json.loads((config / "config.json").read_text())
         assert saved.get("theme") == "catppuccin", (
             "Theme picker did not persist its selection"
         )
+        send(b"\x1b")  # Saving returned to Settings; dismiss the modal stack.
         stash_start = len(output)
         note = f"PTY backup {width}".encode()
         send(b"\x10")

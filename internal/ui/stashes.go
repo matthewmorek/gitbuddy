@@ -140,17 +140,17 @@ func (m *Model) stashDisabled(creating bool) string {
 	return ""
 }
 
-func (m *Model) stashNoteKey(msg tea.KeyPressMsg) tea.Cmd {
+const stashNoteDescription = "Saves staged, unstaged and untracked changes, excluding ignored files."
+
+func (m *Model) stashNoteKey(page *modalPage, msg tea.KeyPressMsg) tea.Cmd {
 	if msg.String() != "enter" {
-		var cmd tea.Cmd
-		m.input, cmd = m.input.Update(msg)
-		return cmd
+		return page.updateInput(msg)
 	}
 	if m.stashDisabled(true) != "" {
 		return nil
 	}
-	note, repo := strings.TrimSpace(m.input.Value()), m.repo
-	m.closeDialog()
+	note, repo := strings.TrimSpace(page.input.Value()), m.repo
+	m.modals.dismiss()
 	return m.runMutation("Stashing changes", func(ctx context.Context) mutationMsg {
 		return mutationMsg{err: repo.StashAll(ctx, note), success: "Changes saved in Stashes"}
 	})
@@ -193,29 +193,29 @@ func (m *Model) openStashConfirmation(key string) {
 	if m.mode != stashesMode || m.focus != "history" || len(s.rows) == 0 || s.list.cancel != nil || s.list.err != nil {
 		return
 	}
-	kind, disabled := "stash-apply", m.stashDisabled(false)
+	kind, disabled := modalStashApply, m.stashDisabled(false)
 	if key == "d" {
-		kind, disabled = "stash-delete", m.mutationBusy()
+		kind, disabled = modalStashDelete, m.mutationBusy()
 	}
 	if disabled != "" {
 		m.notify(disabled, true)
 		return
 	}
-	m.dialog, m.choice, m.confirmedStash = kind, 0, s.rows[s.selected]
+	m.modals.push(modalPage{kind: kind, stash: s.rows[s.selected]}, "")
 }
 
-func (m *Model) stashConfirmationKey(key string) tea.Cmd {
+func (m *Model) stashConfirmationKey(page *modalPage, key string) tea.Cmd {
 	switch key {
 	case "left", "up", "shift+tab":
-		m.choice = 0
+		page.confirm = false
 	case "right", "down", "tab":
-		m.choice = 1
+		page.confirm = true
 	case "enter":
-		choice, selected, deleting, repo := m.choice, m.confirmedStash, m.dialog == "stash-delete", m.repo
-		m.closeDialog()
-		if choice == 0 {
-			return nil
+		if !page.confirm {
+			return m.modals.pop()
 		}
+		selected, deleting, repo := page.stash, page.kind == modalStashDelete, m.repo
+		m.modals.dismiss()
 		if busy := m.mutationBusy(); busy != "" {
 			m.notify(busy+" · confirm again when it finishes", true)
 			return nil

@@ -194,9 +194,9 @@ func (m *Model) updateActions() []action {
 	}
 	// Keep action positions stable while an open palette waits for installation.
 	return []action{
-		{id: "check-updates", title: "Check for updates", category: "App", disabled: checkDisabled},
-		{id: "install-update", title: "Install update", category: "App", value: u.available.Version, disabled: m.updateInstallDisabled()},
-		{id: "restart", title: "Restart", category: "App", value: u.installed, disabled: restartDisabled},
+		{id: "check-updates", title: "Check for updates", category: "App", disabled: checkDisabled, description: "Look for a newer Gitbuddy release."},
+		{id: "install-update", title: "Install update", category: "App", value: u.available.Version, disabled: m.updateInstallDisabled(), description: "Download and install the available Gitbuddy release."},
+		{id: "restart", title: "Restart", category: "App", value: u.installed, disabled: restartDisabled, description: "Restart Gitbuddy to use the installed update."},
 	}
 }
 

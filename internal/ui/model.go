@@ -4,13 +4,10 @@ package ui
 
 import (
 	"context"
-	"fmt"
-	"strconv"
 	"strings"
 	"time"
 
 	"charm.land/bubbles/v2/spinner"
-	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 	"github.com/matthewmorek/gitbuddy/internal/gitrepo"
 	"github.com/matthewmorek/gitbuddy/internal/palette"
@@ -82,21 +79,14 @@ type Model struct {
 	refreshCancel                                         context.CancelFunc
 	now                                                   time.Time
 	fetchFailed                                           bool
-	dialog                                                string
-	input                                                 textinput.Model
-	choice, errorTop                                      int
+	modals                                                modalStack
 	spinner                                               spinner.Model
 	updates                                               appUpdates
 	stashes                                               stashView
-	confirmedStash                                        gitrepo.Stash
 }
 
 func New(ctx context.Context, repo gitrepo.Repo, settings *preferences.Store, themes *palette.Catalog, updates UpdateService, automaticUpdates bool) *Model {
-	input := textinput.New()
-	input.Prompt = ""
-	input.Placeholder = "Search commands"
-	input.SetVirtualCursor(true)
-	m := &Model{ctx: ctx, repo: repo, settings: settings, themes: themes, width: 80, height: 24, dark: true, focus: "history", scope: gitrepo.Current, input: input, spinner: spinner.New(spinner.WithSpinner(spinner.MiniDot)), updates: newAppUpdates(updates, automaticUpdates), now: time.Now()}
+	m := &Model{ctx: ctx, repo: repo, settings: settings, themes: themes, width: 80, height: 24, dark: true, focus: "history", scope: gitrepo.Current, spinner: spinner.New(spinner.WithSpinner(spinner.MiniDot)), updates: newAppUpdates(updates, automaticUpdates), now: time.Now()}
 	m.notify(m.warnings(), true)
 	return m
 }
@@ -479,8 +469,8 @@ func (m *Model) Update(msg tea.Msg) (model tea.Model, command tea.Cmd) {
 	case tea.KeyPressMsg:
 		key := msg.String()
 		if key == "ctrl+c" {
-			if m.dialog != "" {
-				m.closeDialog()
+			if m.modals.current() != nil {
+				m.modals.dismiss()
 				return m, nil
 			}
 			return m, m.quit()
@@ -489,14 +479,14 @@ func (m *Model) Update(msg tea.Msg) (model tea.Model, command tea.Cmd) {
 			return m, nil
 		}
 		if key == "ctrl+p" {
-			if m.dialog != "" {
-				m.closeDialog()
+			if m.modals.current() != nil {
+				m.modals.dismiss()
 				return m, nil
 			}
-			return m, m.openDialog("commands", "")
+			return m, m.modals.push(modalPage{kind: modalCommands}, "")
 		}
-		if m.dialog != "" {
-			return m, m.dialogKey(msg)
+		if page := m.modals.current(); page != nil {
+			return m, m.modalKey(page, msg)
 		}
 		switch key {
 		case "1":
@@ -558,7 +548,7 @@ func (m *Model) Update(msg tea.Msg) (model tea.Model, command tea.Cmd) {
 		}
 		return m, nil
 	case tea.MouseClickMsg:
-		if m.closing || m.dialog != "" || msg.Button != tea.MouseLeft || !m.historyVisible() || m.paneHeight() < 2 {
+		if m.closing || m.modals.current() != nil || msg.Button != tea.MouseLeft || !m.historyVisible() || m.paneHeight() < 2 {
 			return m, nil
 		}
 		for _, segment := range m.modeSegments() {
@@ -568,10 +558,8 @@ func (m *Model) Update(msg tea.Msg) (model tea.Model, command tea.Cmd) {
 		}
 		return m, nil
 	}
-	if m.dialog != "" && m.dialog != "errors" && m.dialog != "stash-apply" && m.dialog != "stash-delete" {
-		var cmd tea.Cmd
-		m.input, cmd = m.input.Update(msg)
-		return m, cmd
+	if page := m.modals.current(); page != nil {
+		return m, page.updateInput(msg)
 	}
 	return m, nil
 }
@@ -635,227 +623,6 @@ func (m *Model) warnings() string {
 	return strings.Join(out, "\n")
 }
 
-func (m *Model) openDialog(kind, value string) tea.Cmd {
-	m.dialog = kind
-	m.choice = 0
-	m.errorTop = 0
-	m.input.SetValue(value)
-	m.input.Placeholder = "Search commands"
-	if kind == "stash-note" {
-		m.input.Placeholder = "Optional note"
-	}
-	m.input.CursorEnd()
-	return m.input.Focus()
-}
-func (m *Model) closeDialog() {
-	m.dialog = ""
-	m.confirmedStash = gitrepo.Stash{}
-	m.input.Blur()
-}
-
-func (m *Model) save(next preferences.Settings) tea.Cmd {
-	old := m.settings.Value
-	err := m.settings.Update(next)
-	m.fail(err)
-	if err != nil && m.settings.Value == old {
-		return nil
-	}
-	cmds := []tea.Cmd{m.schedule()}
-	if next.MaxCommits != old.MaxCommits {
-		if len(m.rows) > next.MaxCommits {
-			m.rows = m.rows[:next.MaxCommits]
-		}
-		m.top = min(m.top, max(0, len(m.rows)-m.visibleRows()))
-		scope := m.scope
-		if m.loading {
-			scope = m.requestedScope
-		}
-		cmds = append(cmds, m.refresh(scope), m.spinner.Tick)
-	}
-	return tea.Batch(cmds...)
-}
-
-func (m *Model) dialogKey(msg tea.KeyPressMsg) tea.Cmd {
-	key := msg.String()
-	if key == "esc" {
-		m.closeDialog()
-		return nil
-	}
-	if m.dialog == "stash-apply" || m.dialog == "stash-delete" {
-		return m.stashConfirmationKey(key)
-	}
-	if m.dialog == "stash-note" {
-		return m.stashNoteKey(msg)
-	}
-	if m.dialog == "errors" {
-		last := max(0, len(m.errorLines())-1)
-		m.errorTop = min(m.errorTop, last)
-		switch key {
-		case "up", "k":
-			m.errorTop = max(0, m.errorTop-1)
-		case "down", "j":
-			m.errorTop = min(last, m.errorTop+1)
-		case "pgdown":
-			m.errorTop = min(last, m.errorTop+5)
-		case "pgup":
-			m.errorTop = max(0, m.errorTop-5)
-		}
-		return nil
-	}
-	if key == "enter" {
-		if m.dialog == "max" || m.dialog == "interval" {
-			next := m.settings.Value
-			n, err := strconv.Atoi(m.input.Value())
-			if err != nil {
-				m.fail(fmt.Errorf("Enter a positive whole number."))
-				return nil
-			}
-			if m.dialog == "max" {
-				next.MaxCommits = n
-			} else {
-				next.FetchIntervalMinutes = n
-			}
-			if err = preferences.Validate(next); err != nil {
-				m.fail(err)
-				return nil
-			}
-			m.closeDialog()
-			return m.save(next)
-		}
-		options := m.options()
-		if len(options) == 0 {
-			return nil
-		}
-		option := options[min(m.choice, len(options)-1)]
-		if option.disabled != "" {
-			m.failure = option.disabled
-			m.notify(m.failure, true)
-			return nil
-		}
-		m.closeDialog()
-		return m.execute(option)
-	}
-	if key == "up" || key == "down" || key == "tab" || key == "shift+tab" {
-		if key == "up" || key == "shift+tab" {
-			m.choice = max(0, m.choice-1)
-		} else {
-			m.choice = min(max(0, len(m.options())-1), m.choice+1)
-		}
-		return nil
-	}
-	var cmd tea.Cmd
-	before := m.input.Value()
-	m.input, cmd = m.input.Update(msg)
-	if before != m.input.Value() {
-		m.choice = 0
-	}
-	return cmd
-}
-
-type action struct{ id, title, category, value, disabled, shortcut string }
-
-func (m *Model) options() []action {
-	var options []action
-	switch m.dialog {
-	case "themes":
-		for _, name := range m.themes.Names {
-			options = append(options, action{id: "theme", title: name, category: "Settings › Theme", value: name})
-		}
-	case "modes":
-		for _, mode := range []string{"system", "light", "dark"} {
-			options = append(options, action{id: "mode", title: mode, category: "Settings › Color mode", value: mode})
-		}
-	default:
-		busy := m.mutationBusy()
-		fetch := busy
-		if fetch == "" && len(m.status.Remotes) == 0 {
-			fetch = "No remotes configured"
-		}
-		pull := busy
-		if pull == "" {
-			switch {
-			case m.status.Operation != "":
-				pull = "Finish the current Git operation externally"
-			case m.status.Branch == "" || m.status.Head == "":
-				pull = "An attached, committed branch is required"
-			case m.status.Upstream == "":
-				pull = "No upstream configured"
-			}
-		}
-		legacy, safe := pull, pull
-		if pull == "" && m.status.Dirty {
-			legacy = "Working tree must be clean, including untracked files"
-			if !m.settings.Value.AutoStashOnSafePull {
-				safe = "Automatic stashing is off; working tree must be clean"
-			}
-		}
-		options = []action{
-			{id: "fetch", title: "Fetch now", category: "Git", disabled: fetch},
-			{id: "safe-pull", title: "Safe pull", category: "Git", disabled: safe},
-			{id: "ff-only", title: "Pull — fast-forward only", category: "Git", disabled: legacy},
-			{id: "merge", title: "Pull — merge", category: "Git", disabled: legacy},
-			{id: "rebase", title: "Pull — rebase", category: "Git", disabled: legacy},
-			{id: "stash-note", title: "Stash all", category: "Git", disabled: m.stashDisabled(true)},
-			{id: "refresh", title: "Refresh local history", category: "History", shortcut: "r"},
-			{id: "all", title: "All branches", category: "History"},
-			{id: "current", title: "Current branch", category: "History"},
-			{id: "settings", title: "Open settings", category: "Settings"},
-			{id: "auto", title: "Automatic fetch enabled", category: "Settings › Fetch", value: strconv.FormatBool(m.settings.Value.AutoFetch)},
-			{id: "interval", title: "Automatic fetch interval", category: "Settings › Fetch", value: fmt.Sprintf("%d min", m.settings.Value.FetchIntervalMinutes)},
-			{id: "auto-stash", title: "Automatic stash on Safe pull", category: "Settings › Pull", value: strconv.FormatBool(m.settings.Value.AutoStashOnSafePull)},
-			{id: "max", title: "Maximum commits", category: "Settings › History", value: strconv.Itoa(m.settings.Value.MaxCommits)},
-			{id: "themes", title: "Theme", category: "Settings › Appearance", value: m.settings.Value.Theme},
-			{id: "modes", title: "Color mode", category: "Settings › Appearance", value: m.settings.Value.ColorMode},
-			{id: "errors", title: "Show errors and warnings", category: "Status"},
-			{id: "clear", title: "Clear error", category: "Status"},
-			{id: "quit", title: "Quit", category: "App", shortcut: "q"},
-		}
-		// Keep Quit last, including in compact palettes navigated to the end.
-		options = append([]action{
-			{id: "history", title: "History", category: "View", shortcut: "1"},
-			{id: "working-copy", title: "Working copy", category: "View", shortcut: "2"},
-			{id: "stashes", title: "Stashes", category: "View", shortcut: "3"},
-		}, options...)
-		for i := range options {
-			switch options[i].id {
-			case "refresh":
-				options[i].title, options[i].category = "Refresh local repository", "Repository"
-			case "all", "current":
-				if options[i].id == string(m.activeScope()) {
-					options[i].value = "active scope"
-				}
-			}
-		}
-		quit := options[len(options)-1]
-		options = append(options[:len(options)-1], m.updateActions()...)
-		options = append(options, quit)
-	}
-	var result []action
-	for _, a := range options {
-		if m.dialog == "settings" && !strings.HasPrefix(a.category, "Settings") {
-			continue
-		}
-		if matches(m.input.Value(), a.title+" "+a.category) {
-			result = append(result, a)
-		}
-	}
-	return result
-}
-func matches(query, text string) bool {
-	text = strings.ToLower(text)
-	for _, word := range strings.Fields(strings.ToLower(query)) {
-		remaining := []rune(word)
-		for _, r := range text {
-			if len(remaining) > 0 && remaining[0] == r {
-				remaining = remaining[1:]
-			}
-		}
-		if len(remaining) > 0 {
-			return false
-		}
-	}
-	return true
-}
 func (m *Model) execute(a action) tea.Cmd {
 	switch a.id {
 	case "history":
@@ -875,35 +642,11 @@ func (m *Model) execute(a action) tea.Cmd {
 		return m.mutate(a.id)
 	case "stashes":
 		return m.changeMode(stashesMode)
-	case "stash-note":
-		return m.openDialog(a.id, "")
 	case "refresh":
 		return tea.Batch(m.refresh(m.activeScope()), m.spinner.Tick)
 	case "all", "current":
 		m.changeMode(historyMode)
 		return m.changeScope(gitrepo.Scope(a.id))
-	case "settings", "themes", "modes", "errors":
-		return m.openDialog(a.id, "")
-	case "max":
-		return m.openDialog("max", strconv.Itoa(m.settings.Value.MaxCommits))
-	case "interval":
-		return m.openDialog("interval", strconv.Itoa(m.settings.Value.FetchIntervalMinutes))
-	case "auto":
-		next := m.settings.Value
-		next.AutoFetch = !next.AutoFetch
-		return m.save(next)
-	case "auto-stash":
-		next := m.settings.Value
-		next.AutoStashOnSafePull = !next.AutoStashOnSafePull
-		return m.save(next)
-	case "theme":
-		next := m.settings.Value
-		next.Theme = a.value
-		return m.save(next)
-	case "mode":
-		next := m.settings.Value
-		next.ColorMode = a.value
-		return m.save(next)
 	case "clear":
 		m.failure = ""
 		m.notice = ""
