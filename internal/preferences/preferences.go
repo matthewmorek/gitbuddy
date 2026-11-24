@@ -19,6 +19,7 @@ import (
 // Settings retains the JSON schema used by earlier Gitbuddy releases.
 type Settings struct {
 	AutoFetch            bool   `json:"autoFetch"`
+	AutoStashOnSafePull  bool   `json:"autoStashOnSafePull"`
 	FetchIntervalMinutes int    `json:"fetchIntervalMinutes"`
 	MaxCommits           int    `json:"maxCommits"`
 	Theme                string `json:"theme"`
@@ -27,7 +28,7 @@ type Settings struct {
 
 // Defaults returns independent, current defaults for missing preferences.
 func Defaults() Settings {
-	return Settings{true, 5, 100, "opencode", "system"}
+	return Settings{AutoFetch: true, AutoStashOnSafePull: true, FetchIntervalMinutes: 5, MaxCommits: 100, Theme: "opencode", ColorMode: "system"}
 }
 
 var themeFilename = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]*$`)
@@ -59,8 +60,9 @@ func parse(data []byte) (Settings, error) {
 	}
 	value := Defaults()
 	targets := map[string]any{
-		"autoFetch": &value.AutoFetch, "fetchIntervalMinutes": &value.FetchIntervalMinutes,
-		"maxCommits": &value.MaxCommits, "theme": &value.Theme, "colorMode": &value.ColorMode,
+		"autoFetch": &value.AutoFetch, "autoStashOnSafePull": &value.AutoStashOnSafePull,
+		"fetchIntervalMinutes": &value.FetchIntervalMinutes,
+		"maxCommits":           &value.MaxCommits, "theme": &value.Theme, "colorMode": &value.ColorMode,
 	}
 	for key, raw := range fields {
 		target, known := targets[key]

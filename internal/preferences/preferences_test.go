@@ -49,7 +49,7 @@ func TestDefaultsReadOnlyAndPrivateRoundTrip(t *testing.T) {
 	if _, err := os.Stat(directory); !os.IsNotExist(err) {
 		t.Fatalf("load wrote settings: %v", err)
 	}
-	next := Settings{false, 1440, 9007199254740991, "my.theme-1", "light"}
+	next := Settings{false, false, 1440, 9007199254740991, "my.theme-1", "light"}
 	if err := store.Update(next); err != nil {
 		t.Fatal(err)
 	}
@@ -81,7 +81,7 @@ func TestOldSettingsMergeDefaultsWithoutRewriting(t *testing.T) {
 	original := "{\"autoFetch\":false,\"fetchIntervalMinutes\":15,\"theme\":\"tokyonight\",\"colorMode\":\"dark\"}\n"
 	path := writeConfig(t, directory, original)
 	store := Load(directory)
-	expected := Settings{false, 15, 100, "tokyonight", "dark"}
+	expected := Settings{false, true, 15, 100, "tokyonight", "dark"}
 	if store.Value != expected || store.Warning != "" {
 		t.Fatalf("old config: %+v", store)
 	}
@@ -99,6 +99,7 @@ func TestMalformedSettingsPreservedAndBlocked(t *testing.T) {
 	for _, original := range []string{
 		"{broken", "[]", "null", "{} {}", `{"autoFetch":false,"version":2}`,
 		`{"AutoFetch":false}`, `{"autoFetch":"false"}`, `{"autoFetch":null}`,
+		`{"autoStashOnSafePull":"false"}`, `{"autoStashOnSafePull":null}`,
 		`{"fetchIntervalMinutes":0}`, `{"fetchIntervalMinutes":1441}`, `{"fetchIntervalMinutes":1.5}`,
 		`{"maxCommits":0}`, `{"maxCommits":-1}`, `{"maxCommits":1.5}`,
 		`{"maxCommits":9007199254740992}`, `{"maxCommits":900719925474099100}`,

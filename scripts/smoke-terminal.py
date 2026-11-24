@@ -242,6 +242,106 @@ def exercise(root, repo, width, mode, executable, isolated):
         assert saved.get("theme") == "catppuccin", (
             "Theme picker did not persist its selection"
         )
+        stash_start = len(output)
+        note = f"PTY backup {width}".encode()
+        send(b"\x10")
+        send(b"stash all")
+        send(b"\r")
+        stash_frame = re.sub(rb"\x1b\[[0-?]*[ -/]*[@-~]", b"", output[stash_start:])
+        assert b"Optional note" in stash_frame, "Stash all prompt missing"
+        send(note)
+        send(b"\r", 0.9)
+        assert git(repo, "status", "--porcelain").stdout == b"", (
+            "Stash all did not clean the fixture"
+        )
+        saved_stash = git(repo, "rev-parse", "refs/stash").stdout.strip()
+        send(b"\x10")
+        send(b"stashes")
+        list_start = len(output)
+        send(b"\r", 0.4)
+        list_frame = re.sub(rb"\x1b\[[0-?]*[ -/]*[@-~]", b"", output[list_start:])
+        assert (
+            note in list_frame
+            and b"a Apply" in list_frame
+            and b"d Delete" in list_frame
+        ), "Stashes tab did not render its note and list shortcuts"
+        if width < 100:
+            assert b"Stash contents" not in list_frame, "Narrow list showed both panes"
+            send(b"\r", 0.3)
+        else:
+            send(b"\t")
+        preview = re.sub(rb"\x1b\[[0-?]*[ -/]*[@-~]", b"", output[list_start:])
+        assert b"Stash contents" in preview and b"Saved index differences" in preview
+        assert b"Untracked files" in preview and b"file.txt" in preview
+        assert re.search(rb"\? a-preview\.txt *\+2", preview), (
+            "Saved untracked file did not show its archived counts"
+        )
+        send(b"ad")  # A preview does not support mutations.
+        assert b"Apply stash?" not in output[list_start:]
+        assert b"Delete stash?" not in output[list_start:]
+        assert git(repo, "status", "--porcelain").stdout == b"", "Browse changed files"
+        send(b"\x1b", 0.2)
+        confirm_start = len(output)
+        send(b"a")
+        confirm = re.sub(rb"\x1b\[[0-?]*[ -/]*[@-~]", b"", output[confirm_start:])
+        assert b"Apply stash?" in confirm and note in confirm
+        assert "▎ Cancel".encode() in confirm, "Apply did not default to Cancel"
+        send(b"\r")
+        assert git(repo, "status", "--porcelain").stdout == b"", "Default Enter applied"
+        send(b"a")
+        send(b"\t")
+        send(b"\r", 0.9)
+        assert git(repo, "rev-parse", "refs/stash").stdout.strip() == saved_stash, (
+            "Apply removed the selected stash"
+        )
+        assert git(repo, "show", ":file.txt").stdout == b"staged edit\n"
+        assert (repo / "file.txt").read_bytes() == b"unstaged edit\n"
+        assert (repo / "a-preview.txt").exists(), "Apply lost the untracked file"
+        if not isolated:
+            # This upstream is a disposable local bare repo; the isolated
+            # release-binary check retains its existing helper requirements.
+            prior_stashes = git(repo, "stash", "list", "--format=%H %gs").stdout
+            original_head = git(repo, "rev-parse", "HEAD").stdout
+            send(b"\x10")
+            send(b"safe pull")
+            pull_start = len(output)
+            send(b"\r")
+            pull_deadline = time.monotonic() + 8
+            while time.monotonic() < pull_deadline:
+                drain(0.1)
+                frame = re.sub(
+                    rb"\x1b\[[0-?]*[ -/]*[@-~]", b"", output[pull_start:]
+                ).replace("▎".encode(), b" ")
+                if b"Local changes were restored" in b" ".join(frame.split()):
+                    break
+            else:
+                raise AssertionError(
+                    "Diverged Safe pull did not report restored changes"
+                )
+            assert git(repo, "rev-parse", "HEAD").stdout == original_head
+            assert git(repo, "stash", "list", "--format=%H %gs").stdout == prior_stashes
+            assert not git(repo, "for-each-ref", "refs/gitbuddy/safe-pull/").stdout
+            assert git(repo, "show", ":file.txt").stdout == b"staged edit\n"
+            assert (repo / "file.txt").read_bytes() == b"unstaged edit\n"
+            assert (repo / "a-preview.txt").exists(), "Safe pull lost untracked work"
+        send(b"1")
+        send(b"3", 0.4)
+        delete_start = len(output)
+        send(b"d")
+        delete = re.sub(rb"\x1b\[[0-?]*[ -/]*[@-~]", b"", output[delete_start:])
+        assert b"Delete stash?" in delete and note in delete
+        send(b"\t")
+        send(b"\x1b", 0.2)
+        assert git(repo, "rev-parse", "refs/stash").stdout.strip() == saved_stash
+        send(b"d")
+        send(b"\t")
+        no_stash_start = len(output)
+        send(b"\r", 0.8)
+        assert not git(repo, "stash", "list", "--format=%H").stdout
+        assert b"No stashes" in output[no_stash_start:], "Delete did not refresh list"
+        assert git(repo, "show", ":file.txt").stdout == b"staged edit\n"
+        assert (repo / "file.txt").read_bytes() == b"unstaged edit\n"
+        send(b"1")
         send(b"\x10")
         update_start = len(output)
         send(b"install update")
@@ -281,8 +381,9 @@ def exercise(root, repo, width, mode, executable, isolated):
         assert b"panic:" not in output and b"fatal error:" not in output, (
             "Runtime error in PTY"
         )
+        safe_pull = "" if isolated else "/safe-pull-restore"
         print(
-            f"PASS {'binary (no Go/Bun/Node)' if isolated else 'source'} PTY {width}x32, {mode}, 1200 main commits plus nested merge/diverged upstream fixture: relation-gutters/loading/ready/repository-name/single-file-rows/all-row-counts/two-space-tabs/summaries/long-line/mixed-diffs/palette/theme/update eligibility/plain Escape/paging/quit/restoration"
+            f"PASS {'binary (no Go/Bun/Node)' if isolated else 'source'} PTY {width}x32, {mode}, 1200 main commits plus nested merge/diverged upstream fixture: relation-gutters/loading/ready/repository-name/single-file-rows/all-row-counts/two-space-tabs/summaries/long-line/mixed-diffs/palette/theme/stash-tab/preview/confirmed-apply-and-delete{safe_pull}/update eligibility/plain Escape/paging/quit/restoration"
         )
     finally:
         evidence = PROJECT / ".verification"
@@ -308,12 +409,15 @@ with tempfile.TemporaryDirectory(prefix="gitbuddy-pty-", dir=scratch) as directo
     repo = root / "fixture"
     repo.mkdir()
     git(repo, "init", "--initial-branch=main")
+    git(repo, "config", "user.name", "Fixture")
+    git(repo, "config", "user.email", "fixture@example.invalid")
+    git(repo, "config", "core.hooksPath", os.devnull)
     stream = bytearray()
     for index in range(1, 1201):
         if index == 1199:
             # All refs exist only in this disposable repository. A nested merge
             # exercises hierarchy together with local-only and incoming gutters,
-            # without a remote, fetch, or selected-checkout ref changes.
+            # without a remote fetch or selected-checkout ref changes.
             for branch, message, parent, merge in [
                 ("topic", "Merged member", "refs/heads/main", ""),
                 ("nested", "Nested member 日本語", "refs/heads/topic", ""),
@@ -339,8 +443,15 @@ with tempfile.TemporaryDirectory(prefix="gitbuddy-pty-", dir=scratch) as directo
         stream.extend(b"M 100644 inline file.txt\ndata 1\nx\n\n")
     stream.extend(b"done\n")
     git(repo, "fast-import", "--quiet", data=stream)
-    git(repo, "config", "branch.main.remote", ".")
-    git(repo, "config", "branch.main.merge", "refs/heads/incoming")
+    if binary_source:
+        git(repo, "config", "branch.main.remote", ".")
+        git(repo, "config", "branch.main.merge", "refs/heads/incoming")
+    else:
+        upstream = root / "upstream.git"
+        git(root, "init", "--bare", str(upstream))
+        git(repo, "remote", "add", "origin", str(upstream))
+        git(repo, "push", "origin", "refs/heads/incoming")
+        git(repo, "branch", "--set-upstream-to=origin/incoming", "main")
     git(repo, "read-tree", "HEAD")
     git(repo, "checkout-index", "-a")
     (repo / "file.txt").write_text("staged edit\n")

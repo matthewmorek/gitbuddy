@@ -463,13 +463,13 @@ func TestActiveStatusSurvivesNarrowHistoryHeader(t *testing.T) {
 		{"tiny fetch", 20, "Fetching", false, false, "Fetching", true},
 		{"tiny loading", 20, "", true, false, "Loading", true},
 		{"tiny closing", 20, "Fetching", false, true, "Quit pending", true},
-		{"fetch below boundary", 42, "Fetching", false, false, "Fetching", true},
-		{"fetch at boundary", 43, "Fetching", false, false, "Fetching", false},
-		{"closing below boundary", 60, "Fetching", false, true, "waiting to quit", true},
-		{"closing at boundary", 61, "Fetching", false, true, "waiting to quit", false},
+		{"fetch below boundary", 51, "Fetching", false, false, "Fetching", true},
+		{"fetch at boundary", 52, "Fetching", false, false, "Fetching", false},
+		{"closing below boundary", 69, "Fetching", false, true, "waiting to quit", true},
+		{"closing at boundary", 70, "Fetching", false, true, "waiting to quit", false},
 		{"normal single pane", 75, "Fetching", false, false, "Fetching", false},
 		{"compact split panes", 100, "Fetching", false, true, "waiting to quit", true},
-		{"normal split panes", 120, "Fetching", false, true, "waiting to quit", false},
+		{"normal split panes", 138, "Fetching", false, true, "waiting to quit", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			m, _ := setup(t, 3)

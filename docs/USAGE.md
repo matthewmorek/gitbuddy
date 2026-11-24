@@ -13,8 +13,8 @@ counts against its configured upstream. Counts cover the full frozen comparison,
 not just the loaded rows. The branch identity and counts refresh together with
 repository history, including after an external checkout. Without an
 available upstream, `↑— ↓—` means unavailable rather than zero.
-In Working copy, branch identity comes from live status. Comparison counts are
-unavailable until the history snapshot matches that branch and HEAD.
+In Working copy and Stashes, branch identity comes from live status. Comparison
+counts are unavailable until the history snapshot matches that branch and HEAD.
 
 Each commit uses two rows:
 
@@ -36,9 +36,9 @@ History defaults to the **current branch and its configured upstream**, includin
 fetched commits not yet merged locally (HEAD only when detached or without an
 available upstream). Use **Ctrl+P → All branches** to include other local branches,
 remote-tracking branches, tags and HEAD, excluding stash/reflog entries.
-The padded **History / Working copy** buttons above the list switch modes with
-a left click; **1 / 2** and palette commands do the same. History scope
-(**Current branch / All branches**) is selected and marked in the palette, not
+The padded **History / Working copy / Stashes** buttons above the list switch
+modes with a left click; **1 / 2 / 3** and palette commands do the same. History
+scope (**Current branch / All branches**) is selected and marked in the palette, not
 repeated in the list header. Scope commands always return to History.
 Fetching/refreshing activity appears once at the opposite end of this header,
 or in the footer when the list is hidden or space is tight. A successful refresh
@@ -152,8 +152,8 @@ scroll long lines horizontally. Below 100 columns, **Enter** opens details and
 that mode's selection and scroll; selecting the active mode does nothing.
 Dialogs consume these keys while open.
 
-Entering Working copy, **r** / **Refresh local repository**, and fetch/pull
-completion refresh local status and reread the selected file. There is no
+Entering Working copy, **r** / **Refresh local repository**, and completion of a
+Git action refresh local status and reread the selected file. There is no
 watcher. Selection follows the raw path; if it disappears, the nearest remaining
 file is selected, or the clean state replaces the old patch. Unchanged content
 retains detail offsets; changed content or a new file starts at the top.
@@ -168,8 +168,8 @@ Untracked previews read only contained regular files or symlink metadata, never
 external symlink targets or special-file contents.
 
 This browser is read-only: no checkboxes, Space staging, hunk actions, editing,
-discarding, committing or conflict resolution. Existing explicit fetch/pull
-commands retain their separate effects and safety checks.
+discarding, committing or conflict resolution. Explicit Git actions are
+available separately in the command palette.
 
 ## Fetch and pull safety
 
@@ -188,25 +188,117 @@ configuration remain yours; background operations must not wait for interactive
 login. Authenticate outside the TUI when necessary. Treat repositories and
 their configured hooks/helpers as trusted, just as when running Git yourself.
 
-The palette offers explicit pull policies:
+The three existing pull commands never prune or auto-stash:
 
-- **Fast-forward only (default):** refuse divergent history.
+- **Pull — fast-forward only:** refuse divergent history.
 - **Merge:** fast-forward when possible; otherwise merge.
 - **Rebase:** replay local commits on the upstream, changing their commit IDs.
 
-Pull requires an attached branch, an upstream, a clean index/worktree
+These commands require an attached branch, an upstream, a clean index/worktree
 **including untracked files**, and no conflicting Git operation already underway.
-This is intentionally stricter than some direct Git invocations. Gitbuddy does
-not stash, reset, abort, resolve conflicts or create/switch branches. It offers
-no staging, manual-commit or push actions; pull may create merge commits or
-replay commits as its selected mode requires. Resolve conflicts externally,
-then refresh.
+Merge and rebase may create or replay commits as their policy requires.
 
-App-initiated fetches and pulls are serialized; timer ticks do not accumulate
-queued jobs. Normal quit waits for an active mutation rather than killing a
-pull. Another Git client can still change the repository: preflight checks are
-not a lock. Git owns its repository locks. Forced termination does not trigger
-an automatic rollback or lock deletion.
+### Safe pull
+
+**Ctrl+P → Safe pull** fetches and prunes only the current upstream remote’s
+branch-tracking namespace, then integrates only a fast-forward. It does not
+fetch or prune tags or other remotes’ tracking refs. It requires an attached,
+committed branch with one named upstream remote using the standard wildcard
+branch-tracking mapping. It refuses local (`.`), mirror, custom/shared tracking
+mappings, and unsupported checkout states rather than trying to broaden its
+scope.
+
+**Automatic stash on Safe pull** is on by default. If the working copy is dirty,
+Safe pull saves staged, unstaged and untracked changes, excluding ignored files,
+then reapplies that exact backup with its index split. Turn the preference off
+to require a clean working copy; a dirty checkout is then refused before fetch
+or stash. A refused fast-forward restores the local changes if Gitbuddy can
+verify it is still safe to do so.
+
+Gitbuddy removes its automatic backup only after verifying both the restored
+files and what is staged, even if the fast-forward was refused. It never
+changes the shared stash stack during Safe pull. If restoration conflicts,
+cannot be verified, or is interrupted, the backup is available in **Stashes**.
+If the fast-forward finished, the branch stays updated. Some changes may already
+have applied: inspect **Working copy** and **Show errors and warnings**, then
+resolve or recover before retrying.
+Gitbuddy does not reset the branch or discard partial results. Safe pull and
+Stash all leave unrelated clean files alone and refuse to clear files whose
+current bytes cannot be saved because of filters, line-ending conversion or
+other attributes. Safe pull checks the raw contents of tracked destinations
+before fast-forwarding and again before restoring the backup, including where
+Git's merge moves a saved edit to a renamed path. A directory tracked upstream
+at the old name is not in the way if no saved file needs to be written there.
+Ignored files, symlinks, and other obstructions at restore destinations still
+block restoration. If Gitbuddy cannot safely restore or verify the changes, it
+keeps the backup for recovery.
+
+Recovery backups appear as **Gitbuddy Safe pull backup** entries. Outside
+Gitbuddy they are under `refs/gitbuddy/safe-pull/`, not in `git stash list`.
+Use the full object ID shown in the error or by
+`git for-each-ref refs/gitbuddy/safe-pull/`. When it is safe to apply,
+`git -c apply.whitespace=nowarn stash apply --index <id>` keeps the backup
+without rewriting staged whitespace. Gitbuddy does not let another worktree
+delete a recovery backup during an active Safe pull in the same repository.
+Wait for the pull to finish before using Git to remove a backup.
+Once you no longer need it,
+`git update-ref --no-deref -d refs/gitbuddy/safe-pull/<id> <id>` removes only
+that backup, and only if the ref still points to that ID.
+
+### Stash actions
+
+**Ctrl+P → Stash all** saves staged, unstaged and untracked changes, excluding
+ignored files. Enter an optional note and press **Enter** to stash, or **Esc**
+to cancel. Safe pull, Stash all and Apply stash refuse unmerged files, in-progress Git
+operations, submodules, and unsupported paths such as untracked nested repos.
+Git stash cannot reliably restore a staged deletion with a recreated untracked
+file at the same path; move that replacement aside before continuing. Stash all
+also refuses to clear the checkout if restoring a tracked path would overwrite
+an ignored file or directory contents.
+
+**3**, the **Stashes** tab or **Ctrl+P → Stashes** opens the list of saved
+entries newest first, with their notes, dates and source (shared stack or Safe
+pull recovery). **↑ / ↓** or **k / j** selects an entry. At 100 columns or more
+the preview is beside the list; use **Tab** to focus and scroll it. On narrower
+terminals, **Enter** or **Tab** opens the preview and **Esc** returns to the list.
+**r** re-reads the list and preview after external changes.
+
+The preview is read-only and uses Git 2.45 or later to compare saved trees, not
+the current files. It shows tracked changes from the stash base, separately
+saved untracked files, and saved index versions that differ from the saved
+worktree. The index section shows only the difference, not another copy of
+the tracked counts. File rows show statuses, renames, line counts or `binary`.
+
+From the focused stash list, **a** opens **Apply stash?** and **d** opens
+**Delete stash?**. Both show the selected note and date and default to
+**Cancel**. Use **Tab** or **→**, then **Enter**, to confirm; **Esc** cancels
+regardless of the highlighted option. Apply attempts to restore the index split
+and always keeps the stash. It checks destination files byte for byte, including
+for recovery backups, and refuses if destinations are obstructed or cannot be
+verified. Delete removes only the selected entry, without applying it. Gitbuddy
+does not stage files manually, commit, push, abort operations, or resolve conflicts.
+
+If the shared stack changed, refresh and confirm again. For multiple entries
+with the same object ID within the stack, use Git to select the intended entry.
+Shared stack deletion requires a loose, direct stash ref with files-based Git
+ref storage, and an atomic reflog exchange on macOS or Linux. Unsupported
+layouts, filesystems, or ref backends such as reftable remain browsable; use Git
+to delete the intended entry there. A Safe pull recovery ref has its own identity
+and is deleted separately, without changing the shared stack.
+
+App-initiated Git mutations are serialized; timer ticks do not queue jobs.
+Normal quit waits for an active mutation, including any stash restore. Another
+Git client can still change the repository: preflight checks are not a lock.
+Gitbuddy uses Git's locks and keeps the original reflog until a files-based
+stack deletion is settled. After forced termination, reopening **Stashes**
+checks the saved transaction, restores the original log if the tip did not
+change, or finishes cleanup if deletion committed. If files are unexpected or
+ownership cannot be verified, Gitbuddy preserves them in `gitbuddy-stash-delete`
+in the Git common directory. Inspect the transaction and stack before
+removing any locks or retrying. If Safe pull was interrupted during backup or
+checkout, inspect **Stashes** and **Working copy**. The Gitbuddy recovery guard
+releases on process exit, but Git's own locks may still need investigation; make
+sure no Git process is running first.
 
 ## Preferences and themes
 
@@ -216,6 +308,7 @@ Preferences live in `$XDG_CONFIG_HOME/gitbuddy/config.json`, or
 ```json
 {
   "autoFetch": true,
+  "autoStashOnSafePull": true,
   "fetchIntervalMinutes": 5,
   "maxCommits": 100,
   "theme": "opencode",
@@ -227,6 +320,11 @@ The interval accepts whole minutes from 1 to 1440. `maxCommits` accepts positive
 safe integers; older configuration without this field uses 100. Color mode is
 `system`, `light` or `dark`; system follows terminal reporting, with dark as the
 fallback.
+
+Older configuration files without `autoStashOnSafePull` use `true`. When
+downgrading to a Gitbuddy release that predates this setting, back up the config
+and remove the `autoStashOnSafePull` key before launching it; older releases
+treat unknown keys as invalid and block saving.
 
 Valid changes apply to the running app even if persistence fails. Settings are
 saved atomically when safe. Invalid or externally modified configuration

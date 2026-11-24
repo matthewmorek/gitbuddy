@@ -41,11 +41,12 @@ type readyMsg int
 type minuteMsg time.Time
 type noticeExpiredMsg int
 type mutationMsg struct {
-	fetch bool
-	err   error
+	fetch   bool
+	err     error
+	success string
 }
 
-// QuitMsg is also used by the OS signal handler. Active pulls settle first.
+// QuitMsg is also used by the OS signal handler. Active mutations settle first.
 type QuitMsg struct{}
 
 type Model struct {
@@ -86,6 +87,8 @@ type Model struct {
 	choice, errorTop                                      int
 	spinner                                               spinner.Model
 	updates                                               appUpdates
+	stashes                                               stashView
+	confirmedStash                                        gitrepo.Stash
 }
 
 func New(ctx context.Context, repo gitrepo.Repo, settings *preferences.Store, themes *palette.Catalog, updates UpdateService, automaticUpdates bool) *Model {
@@ -168,7 +171,7 @@ func (m *Model) refresh(scope gitrepo.Scope) tea.Cmd {
 	}, func() tea.Msg {
 		status, err := repo.Status(ctx)
 		return statusMsg{generation, status, err}
-	})
+	}, m.refreshStashes())
 }
 
 func (m *Model) selectCommit(sha string) tea.Cmd {
@@ -231,33 +234,53 @@ func (m *Model) schedule() tea.Cmd {
 }
 
 func (m *Model) mutate(mode string) tea.Cmd {
-	if m.operation != "" || m.closing || m.updates.installing {
-		return nil
-	}
-	fetch := mode == "fetch"
-	if fetch && len(m.status.Remotes) == 0 {
-		return nil
-	}
-	m.operation = "Fetching"
-	if !fetch {
-		m.operation = "Pulling (" + mode + ")"
+	if mode == "fetch" {
+		if len(m.status.Remotes) == 0 {
+			return nil
+		}
+		repo := m.repo
+		return m.runMutation("Fetching", func(ctx context.Context) mutationMsg {
+			return mutationMsg{fetch: true, err: repo.Fetch(ctx)}
+		})
 	}
 	repo := m.repo
-	// Deliberately independent of the read context: ordinary quit waits for the
-	// mutation result, rather than interrupting a merge/rebase or deleting locks.
-	return tea.Batch(m.spinner.Tick, func() tea.Msg {
-		var err error
-		if fetch {
-			err = repo.Fetch(context.Background())
-		} else {
-			err = repo.Pull(context.Background(), gitrepo.PullMode(mode))
-		}
-		return mutationMsg{fetch, err}
+	if mode == "safe-pull" {
+		auto := m.settings.Value.AutoStashOnSafePull
+		return m.runMutation("Safe pull", func(ctx context.Context) mutationMsg {
+			_, err := repo.SafePull(ctx, auto)
+			return mutationMsg{err: err, success: "Safe pull complete"}
+		})
+	}
+	return m.runMutation("Pulling ("+mode+")", func(ctx context.Context) mutationMsg {
+		return mutationMsg{err: repo.Pull(ctx, gitrepo.PullMode(mode))}
 	})
+}
+
+func (m *Model) runMutation(activity string, run func(context.Context) mutationMsg) tea.Cmd {
+	if m.mutationBusy() != "" || m.closing {
+		return nil
+	}
+	m.operation = activity
+	// Deliberately independent of the read context: ordinary quit waits for the
+	// mutation result, rather than interrupting integration or restoration.
+	return tea.Batch(m.spinner.Tick, func() tea.Msg {
+		return run(context.Background())
+	})
+}
+
+func (m *Model) mutationBusy() string {
+	if m.operation != "" {
+		return "A Git operation is already running"
+	}
+	if m.updates.installing {
+		return "Wait for the update installation to finish"
+	}
+	return ""
 }
 
 func (m *Model) quit() tea.Cmd {
 	m.retireFileRead()
+	m.stashes.retire()
 	if m.refreshCancel != nil {
 		m.refreshCancel()
 	}
@@ -364,6 +387,14 @@ func (m *Model) Update(msg tea.Msg) (model tea.Model, command tea.Cmd) {
 		return m, tea.Batch(detail, m.localReady())
 	case statusMsg:
 		return m, m.applyStatus(msg)
+	case stashesMsg:
+		return m, m.receiveStashes(msg)
+	case stashPreviewMsg:
+		if m.stashes.detail.accept(msg.request, msg.err) {
+			m.stashes.preview = msg.preview
+			m.fail(msg.err)
+		}
+		return m, nil
 	case fileDetailsMsg:
 		return m, m.applyFileDetails(msg)
 	case pageMsg:
@@ -418,6 +449,9 @@ func (m *Model) Update(msg tea.Msg) (model tea.Model, command tea.Cmd) {
 	case mutationMsg:
 		m.operation = ""
 		m.fail(msg.err)
+		if msg.err == nil {
+			m.notify(msg.success, false)
+		}
 		if msg.fetch {
 			m.fetchFailed = msg.err != nil
 			if msg.err == nil {
@@ -469,6 +503,10 @@ func (m *Model) Update(msg tea.Msg) (model tea.Model, command tea.Cmd) {
 			return m, m.changeMode(historyMode)
 		case "2":
 			return m, m.changeMode(workingCopyMode)
+		case "3":
+			return m, m.changeMode(stashesMode)
+		case "a", "d":
+			m.openStashConfirmation(key)
 		case "q":
 			return m, m.quit()
 		case "r":
@@ -486,6 +524,9 @@ func (m *Model) Update(msg tea.Msg) (model tea.Model, command tea.Cmd) {
 				m.focus = "details"
 			}
 		case "left", "right", "up", "k", "down", "j", "pgup", "pgdown":
+			if m.mode == stashesMode {
+				return m, m.navigateStashes(key)
+			}
 			if m.mode == workingCopyMode && m.focus == "details" {
 				m.prepareFileViewport(m.colors())
 				var cmd tea.Cmd
@@ -527,7 +568,7 @@ func (m *Model) Update(msg tea.Msg) (model tea.Model, command tea.Cmd) {
 		}
 		return m, nil
 	}
-	if m.dialog != "" && m.dialog != "errors" {
+	if m.dialog != "" && m.dialog != "errors" && m.dialog != "stash-apply" && m.dialog != "stash-delete" {
 		var cmd tea.Cmd
 		m.input, cmd = m.input.Update(msg)
 		return m, cmd
@@ -538,6 +579,15 @@ func (m *Model) Update(msg tea.Msg) (model tea.Model, command tea.Cmd) {
 func (m *Model) activity() string {
 	if m.operation != "" {
 		return m.operation + "..."
+	}
+	if m.mode == stashesMode {
+		if m.stashes.list.cancel != nil {
+			return "Loading stashes..."
+		}
+		if m.stashes.detail.cancel != nil {
+			return "Loading stash contents..."
+		}
+		return ""
 	}
 	if m.mode == workingCopyMode {
 		if m.statusLoading {
@@ -590,10 +640,18 @@ func (m *Model) openDialog(kind, value string) tea.Cmd {
 	m.choice = 0
 	m.errorTop = 0
 	m.input.SetValue(value)
+	m.input.Placeholder = "Search commands"
+	if kind == "stash-note" {
+		m.input.Placeholder = "Optional note"
+	}
 	m.input.CursorEnd()
 	return m.input.Focus()
 }
-func (m *Model) closeDialog() { m.dialog = ""; m.input.Blur() }
+func (m *Model) closeDialog() {
+	m.dialog = ""
+	m.confirmedStash = gitrepo.Stash{}
+	m.input.Blur()
+}
 
 func (m *Model) save(next preferences.Settings) tea.Cmd {
 	old := m.settings.Value
@@ -622,6 +680,12 @@ func (m *Model) dialogKey(msg tea.KeyPressMsg) tea.Cmd {
 	if key == "esc" {
 		m.closeDialog()
 		return nil
+	}
+	if m.dialog == "stash-apply" || m.dialog == "stash-delete" {
+		return m.stashConfirmationKey(key)
+	}
+	if m.dialog == "stash-note" {
+		return m.stashNoteKey(msg)
 	}
 	if m.dialog == "errors" {
 		last := max(0, len(m.errorLines())-1)
@@ -702,12 +766,7 @@ func (m *Model) options() []action {
 			options = append(options, action{id: "mode", title: mode, category: "Settings › Color mode", value: mode})
 		}
 	default:
-		busy := ""
-		if m.operation != "" {
-			busy = "A Git operation is already running"
-		} else if m.updates.installing {
-			busy = "Wait for the update installation to finish"
-		}
+		busy := m.mutationBusy()
 		fetch := busy
 		if fetch == "" && len(m.status.Remotes) == 0 {
 			fetch = "No remotes configured"
@@ -721,15 +780,41 @@ func (m *Model) options() []action {
 				pull = "An attached, committed branch is required"
 			case m.status.Upstream == "":
 				pull = "No upstream configured"
-			case m.status.Dirty:
-				pull = "Working tree must be clean, including untracked files"
 			}
 		}
-		options = []action{{id: "fetch", title: "Fetch now", category: "Git", disabled: fetch}, {id: "ff-only", title: "Pull — fast-forward only", category: "Git", disabled: pull}, {id: "merge", title: "Pull — merge", category: "Git", disabled: pull}, {id: "rebase", title: "Pull — rebase", category: "Git", disabled: pull}, {id: "refresh", title: "Refresh local history", category: "History", shortcut: "r"}, {id: "all", title: "All branches", category: "History"}, {id: "current", title: "Current branch", category: "History"}, {id: "settings", title: "Open settings", category: "Settings"}, {id: "auto", title: "Automatic fetch enabled", category: "Settings › Fetch", value: strconv.FormatBool(m.settings.Value.AutoFetch)}, {id: "interval", title: "Automatic fetch interval", category: "Settings › Fetch", value: fmt.Sprintf("%d min", m.settings.Value.FetchIntervalMinutes)}, {id: "max", title: "Maximum commits", category: "Settings › History", value: strconv.Itoa(m.settings.Value.MaxCommits)}, {id: "themes", title: "Theme", category: "Settings › Appearance", value: m.settings.Value.Theme}, {id: "modes", title: "Color mode", category: "Settings › Appearance", value: m.settings.Value.ColorMode}, {id: "errors", title: "Show errors and warnings", category: "Status"}, {id: "clear", title: "Clear error", category: "Status"}, {id: "quit", title: "Quit", category: "App", shortcut: "q"}}
+		legacy, safe := pull, pull
+		if pull == "" && m.status.Dirty {
+			legacy = "Working tree must be clean, including untracked files"
+			if !m.settings.Value.AutoStashOnSafePull {
+				safe = "Automatic stashing is off; working tree must be clean"
+			}
+		}
+		options = []action{
+			{id: "fetch", title: "Fetch now", category: "Git", disabled: fetch},
+			{id: "safe-pull", title: "Safe pull", category: "Git", disabled: safe},
+			{id: "ff-only", title: "Pull — fast-forward only", category: "Git", disabled: legacy},
+			{id: "merge", title: "Pull — merge", category: "Git", disabled: legacy},
+			{id: "rebase", title: "Pull — rebase", category: "Git", disabled: legacy},
+			{id: "stash-note", title: "Stash all", category: "Git", disabled: m.stashDisabled(true)},
+			{id: "refresh", title: "Refresh local history", category: "History", shortcut: "r"},
+			{id: "all", title: "All branches", category: "History"},
+			{id: "current", title: "Current branch", category: "History"},
+			{id: "settings", title: "Open settings", category: "Settings"},
+			{id: "auto", title: "Automatic fetch enabled", category: "Settings › Fetch", value: strconv.FormatBool(m.settings.Value.AutoFetch)},
+			{id: "interval", title: "Automatic fetch interval", category: "Settings › Fetch", value: fmt.Sprintf("%d min", m.settings.Value.FetchIntervalMinutes)},
+			{id: "auto-stash", title: "Automatic stash on Safe pull", category: "Settings › Pull", value: strconv.FormatBool(m.settings.Value.AutoStashOnSafePull)},
+			{id: "max", title: "Maximum commits", category: "Settings › History", value: strconv.Itoa(m.settings.Value.MaxCommits)},
+			{id: "themes", title: "Theme", category: "Settings › Appearance", value: m.settings.Value.Theme},
+			{id: "modes", title: "Color mode", category: "Settings › Appearance", value: m.settings.Value.ColorMode},
+			{id: "errors", title: "Show errors and warnings", category: "Status"},
+			{id: "clear", title: "Clear error", category: "Status"},
+			{id: "quit", title: "Quit", category: "App", shortcut: "q"},
+		}
 		// Keep Quit last, including in compact palettes navigated to the end.
 		options = append([]action{
 			{id: "history", title: "History", category: "View", shortcut: "1"},
 			{id: "working-copy", title: "Working copy", category: "View", shortcut: "2"},
+			{id: "stashes", title: "Stashes", category: "View", shortcut: "3"},
 		}, options...)
 		for i := range options {
 			switch options[i].id {
@@ -786,8 +871,12 @@ func (m *Model) execute(a action) tea.Cmd {
 			m.updates.restart = true
 			return m.quit()
 		}
-	case "fetch", "ff-only", "merge", "rebase":
+	case "fetch", "safe-pull", "ff-only", "merge", "rebase":
 		return m.mutate(a.id)
+	case "stashes":
+		return m.changeMode(stashesMode)
+	case "stash-note":
+		return m.openDialog(a.id, "")
 	case "refresh":
 		return tea.Batch(m.refresh(m.activeScope()), m.spinner.Tick)
 	case "all", "current":
@@ -802,6 +891,10 @@ func (m *Model) execute(a action) tea.Cmd {
 	case "auto":
 		next := m.settings.Value
 		next.AutoFetch = !next.AutoFetch
+		return m.save(next)
+	case "auto-stash":
+		next := m.settings.Value
+		next.AutoStashOnSafePull = !next.AutoStashOnSafePull
 		return m.save(next)
 	case "theme":
 		next := m.settings.Value

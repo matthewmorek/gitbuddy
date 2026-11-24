@@ -25,6 +25,12 @@ type fakeRepository struct {
 	fileDetails                map[string]gitrepo.WorkingCopyDetails
 	fileReads                  []string
 	fileRead                   func(context.Context, string) (gitrepo.WorkingCopyDetails, error)
+	stashRows                  []gitrepo.Stash
+	stashErr                   error
+	stashPreviews              map[string]gitrepo.StashPreview
+	stashed                    []string
+	applied, deleted           []gitrepo.Stash
+	safePulls                  []bool
 }
 
 func (r *fakeRepository) Root() string        { return "/example/linked-checkout" }
@@ -55,6 +61,28 @@ func (r *fakeRepository) WorkingCopyDetails(ctx context.Context, path string) (g
 }
 func (r *fakeRepository) Fetch(context.Context) error                  { r.fetched++; return nil }
 func (r *fakeRepository) Pull(context.Context, gitrepo.PullMode) error { r.pulled++; return nil }
+func (r *fakeRepository) SafePull(_ context.Context, auto bool) (string, error) {
+	r.safePulls = append(r.safePulls, auto)
+	return "", nil
+}
+func (r *fakeRepository) StashAll(_ context.Context, note string) error {
+	r.stashed = append(r.stashed, note)
+	return nil
+}
+func (r *fakeRepository) Stashes(context.Context) ([]gitrepo.Stash, error) {
+	return r.stashRows, r.stashErr
+}
+func (r *fakeRepository) StashPreview(_ context.Context, id string) (gitrepo.StashPreview, error) {
+	return r.stashPreviews[id], nil
+}
+func (r *fakeRepository) ApplyStash(_ context.Context, entry gitrepo.Stash) error {
+	r.applied = append(r.applied, entry)
+	return nil
+}
+func (r *fakeRepository) DeleteStash(_ context.Context, entry gitrepo.Stash) error {
+	r.deleted = append(r.deleted, entry)
+	return nil
+}
 
 func setup(t *testing.T, count int) (*Model, *fakeRepository) {
 	t.Helper()
@@ -840,8 +868,12 @@ func TestModeMouseHitboxesAndScopePalette(t *testing.T) {
 			}
 		}
 	}
+	click, _ := setup(t, 3)
+	if _, cmd := click.Update(tea.MouseClickMsg{X: 26, Y: 4, Button: tea.MouseLeft}); click.mode != stashesMode || cmd == nil {
+		t.Fatal("clicking Stashes did not switch modes")
+	}
 	for _, invalid := range []tea.MouseClickMsg{
-		{X: 2, Y: 4, Button: tea.MouseLeft}, {X: 26, Y: 4, Button: tea.MouseLeft},
+		{X: 2, Y: 4, Button: tea.MouseLeft}, {X: 35, Y: 4, Button: tea.MouseLeft},
 		{X: 3, Y: 3, Button: tea.MouseLeft}, {X: 3, Y: 5, Button: tea.MouseLeft},
 		{X: 3, Y: 4, Button: tea.MouseRight},
 	} {
@@ -892,6 +924,7 @@ func TestModeKeysKeepNavigationSeparateAndDialogsConsumeInput(t *testing.T) {
 		m.openDialog(dialog, "")
 		press(m, '1', "1")
 		press(m, '2', "2")
+		press(m, '3', "3")
 		if m.mode != workingCopyMode || m.focus != "details" {
 			t.Fatalf("%s leaked mode shortcuts", dialog)
 		}

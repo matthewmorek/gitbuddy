@@ -20,6 +20,7 @@ type viewMode int
 const (
 	historyMode viewMode = iota
 	workingCopyMode
+	stashesMode
 )
 
 // History and working-copy navigation have separate owners. Raw paths are keys;
@@ -57,10 +58,14 @@ func (m *Model) changeMode(mode viewMode) tea.Cmd {
 		return nil
 	}
 	m.retireFileRead()
+	m.stashes.retire()
 	m.mode, m.focus = mode, "history"
 	m.ensureVisible()
 	if mode == workingCopyMode {
 		return tea.Batch(m.refresh(m.activeScope()), m.spinner.Tick)
+	}
+	if mode == stashesMode {
+		return tea.Batch(m.refreshStashes(), m.spinner.Tick)
 	}
 	return nil
 }

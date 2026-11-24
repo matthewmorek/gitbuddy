@@ -9,6 +9,7 @@ without leaving the terminal. **Ctrl+P** puts commands and settings in one place
 
 - History and commit details side by side, with a single-pane layout on smaller terminals.
 - Current-branch or all-branch history, periodic fetching, and explicit pull modes.
+- Safe pull with upstream-only pruning, plus stash and apply actions.
 - Read-only staged/unstaged comparisons and bounded untracked-file previews.
 - OpenCode, Tokyo Night and Catppuccin palettes in light, dark or system mode.
 
@@ -61,28 +62,33 @@ gitbuddy /path/to/your/repository
 Repository subdirectories also work. History opens on the **current branch and
 its upstream**, including incoming commits; choose **Ctrl+P → All branches** for
 the wider view. Start with **Ctrl+P** to explore commands and settings.
-Press **2** or click **Working copy** to inspect changed files; **1** returns to
+Press **2** for **Working copy** or **3** for **Stashes**; **1** returns to
 **History**. Choose history scope in the palette, which marks the active value.
-Working-copy browsing never stages or edits files.
+Browsing changed files or saved stashes never stages or edits files.
 
 | Key                 | Action                                                    |
 | ------------------- | --------------------------------------------------------- |
 | Ctrl+P              | Search commands **and individual settings**               |
-| 1 / 2               | Select History / Working copy                             |
-| ↑ / ↓ or k / j      | Select a commit/file; scroll focused details               |
+| 1 / 2 / 3           | Select History / Working copy / Stashes                   |
+| ↑ / ↓ or k / j      | Select a commit, file or stash; scroll focused details   |
 | ← / →               | Scroll working-copy details horizontally                  |
 | Page Up / Page Down | Move a page                                               |
 | Tab / Shift+Tab     | Switch pane                                               |
 | Enter               | Open details on a narrow terminal; apply a palette choice |
 | Escape              | Close a dialog or return to the active mode's list        |
-| r                   | Refresh local history, status and selected file           |
+| r                   | Refresh local repository and the active preview         |
+| a / d               | Confirm apply / delete from the focused Stashes list    |
 | q                   | Quit outside text input                                   |
 | Ctrl+C              | Close a dialog; otherwise request orderly quit            |
 
 Automatic fetching starts after local history renders and repeats **every five
 minutes** by default. Disable it or change the interval in **Ctrl+P → Settings**.
-Pulling always requires choosing an explicit command.
-Local changes refresh on entering Working copy, on **r**, and after fetch/pull.
+Pulling always requires choosing an explicit command. **Safe pull** tries only a
+fast-forward and can temporarily stash local changes. It removes the backup after
+a verified restore and keeps it in **Stashes** if recovery is needed. Use
+**Stash all** to save changes manually. The **Stashes** tab previews saved files;
+applying keeps the entry, and deleting is a separate confirmed action.
+Local changes refresh on entering Working copy, on **r**, and after Git actions.
 There is no filesystem watcher; refresh after external edits. Mixed staged and
 unstaged changes share a file row but have separate labeled comparisons.
 Each file occupies one row with staged/unstaged status positions and right-aligned
@@ -126,7 +132,7 @@ reproduction without private repository data. Discuss larger changes in an issue
 before implementing them.
 
 For code changes, fork the repository and clone your fork. From the checkout,
-with **Go 1.26.7 or newer**, Git and Python 3:
+with **Go 1.26.7 or newer**, **Git 2.45 or newer** (for stash previews), and Python 3:
 
 ```sh
 go run ./cmd/gitbuddy /path/to/your/repository

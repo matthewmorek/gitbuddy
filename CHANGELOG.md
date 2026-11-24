@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.4.0] — 2026-11-24
+
+- Press `3` for **Stashes**, the third tab. Browse shared stashes and Safe pull
+  recovery backups newest first, with saved file statuses and diff stats.
+  From the list, `a` applies without dropping the stash and `d` deletes without
+  applying it; both ask for confirmation. **Stash all** saves staged, unstaged
+  and untracked changes (not ignored files) with an optional note.
+- **Safe pull** fetches and prunes only the upstream remote's branch-tracking
+  refs and integrates only by fast-forward. Automatic stashing is on by default
+  and saves staged, unstaged and untracked changes, restoring what was staged
+  when it can safely reapply them. If restoration conflicts, a completed
+  fast-forward stays in place and the backup remains in **Stashes** for recovery.
+  The existing fast-forward only, merge and rebase commands are unchanged.
+- Stash previews require Git 2.45 or later. Gitbuddy can delete shared stashes
+  only with a loose, direct stash ref and files-based storage on a macOS or
+  Linux filesystem that supports atomic reflog exchange. Use Git if deletion is
+  unsupported or if multiple entries share the same stash ID.
+- Before downgrading to a version that predates the Safe pull setting, back up
+  your configuration and remove `autoStashOnSafePull`; older versions reject
+  unknown keys.
+
 ## [0.3.2] — 2026-11-17
 
 - Indent commits introduced by a merge beneath that merge, including nested merges,

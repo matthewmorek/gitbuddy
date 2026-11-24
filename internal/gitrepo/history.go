@@ -374,71 +374,78 @@ func (r *Repository) Details(ctx context.Context, sha string) (Details, error) {
 	if metadata[8] != "" {
 		d.Parents = strings.Split(metadata[8], " ")
 	}
-	args := []string{"diff", "--no-ext-diff", "--no-textconv", "--name-status", "-z", "-M"}
+	args := []string{"diff", "--no-ext-diff", "--no-textconv", "-z", "-M"}
+	revisions := []string{sha, "--"}
 	if len(d.Parents) == 0 {
 		args = append([]string{"diff-tree", "--root", "--no-commit-id", "-r"}, args[1:]...)
 		d.Comparison = "Root commit: all files added"
 	} else {
-		args = append(args, d.Parents[0])
+		revisions = append([]string{d.Parents[0]}, revisions...)
 		d.Comparison = "Compared with parent " + d.Parents[0]
 		if len(d.Parents) > 1 {
 			d.Comparison = "Compared with first parent " + d.Parents[0]
 		}
 	}
-	out, err = r.git(ctx, "", append(args, sha, "--")...)
+	d.Files, err = r.changedFiles(ctx, args, revisions)
+	return d, err
+}
+
+func (r *Repository) changedFiles(ctx context.Context, args, revisions []string) ([]ChangedFile, error) {
+	run := func(format string) (string, error) {
+		cmd := append(slices.Clone(args), format)
+		cmd = append(cmd, revisions...)
+		return r.git(ctx, "", cmd...)
+	}
+	out, err := run("--name-status")
 	if err != nil {
-		return d, err
+		return nil, err
 	}
 	names, err := fields(out)
 	if err != nil {
-		return d, err
+		return nil, err
 	}
+	files := []ChangedFile{}
 	for i := 0; i < len(names); {
 		status := names[i]
 		if !fileStatusPattern.MatchString(status) || i+1 >= len(names) {
-			return d, errors.New("Git returned an invalid changed-file record.")
+			return nil, errors.New("Git returned an invalid changed-file record.")
 		}
 		file := ChangedFile{Status: status, Path: names[i+1]}
 		i += 2
 		if status[0] == 'R' || status[0] == 'C' {
 			if i >= len(names) {
-				return d, errors.New("Git returned an incomplete rename record.")
+				return nil, errors.New("Git returned an incomplete rename record.")
 			}
 			file.OldPath, file.Path = file.Path, names[i]
 			i++
 		}
-		d.Files = append(d.Files, file)
+		files = append(files, file)
 	}
 	// --name-status suppresses --numstat when combined. Read them separately
 	// against the same immutable SHA/first parent, matching raw path pairs rather
 	// than record order (rename numstat uses an extra NUL and two path fields).
-	for i, arg := range args {
-		if arg == "--name-status" {
-			args[i] = "--numstat"
-		}
-	}
-	out, err = r.git(ctx, "", append(args, sha, "--")...)
+	out, err = run("--numstat")
 	if err != nil {
-		return d, err
+		return nil, err
 	}
 	stats, err := parseNumstat(out)
 	if err != nil {
-		return d, err
+		return nil, err
 	}
-	for i := range d.Files {
-		file := &d.Files[i]
+	for i := range files {
+		file := &files[i]
 		key := filePaths{file.OldPath, file.Path}
 		stat, ok := stats[key]
 		if !ok {
-			return d, errors.New("Git returned mismatched changed-file statistics.")
+			return nil, errors.New("Git returned mismatched changed-file statistics.")
 		}
 		file.Added, file.Deleted, file.Binary = stat.Added, stat.Deleted, stat.Binary
 		delete(stats, key)
 	}
 	if len(stats) != 0 {
-		return d, errors.New("Git returned unexpected changed-file statistics.")
+		return nil, errors.New("Git returned unexpected changed-file statistics.")
 	}
-	return d, nil
+	return files, nil
 }
 
 type filePaths struct{ old, path string }

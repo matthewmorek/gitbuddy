@@ -67,7 +67,7 @@ func (m *Model) header(c palette.Colors) string {
 	width := max(0, m.contentWidth()-2*horizontalPadding)
 	branch := m.snapshot.Branch
 	head := m.snapshot.Head
-	if m.mode == workingCopyMode {
+	if m.mode != historyMode {
 		branch, head = m.status.Branch, m.status.Head
 	}
 	if branch == "" {
@@ -212,6 +212,10 @@ func (m *Model) visibleRows() int     { return max(1, (m.paneHeight()-4)/2) }
 func (m *Model) visibleFileRows() int { return max(1, m.paneHeight()-4) }
 func (m *Model) ensureVisible() {
 	m.ensureFileVisible()
+	m.ensureStashVisible()
+	if m.mode != historyMode {
+		return
+	}
 	for i, row := range m.rows {
 		if row.SHA == m.selected {
 			if i < m.top {
@@ -365,12 +369,17 @@ func (m *Model) modeSegments() []modeSegment {
 		width /= 2
 	}
 	inner := max(0, width-2*horizontalPadding)
-	history := min(9, (inner+1)/2)
-	if inner >= 23 {
-		history = 9
+	history, working, stashes := 9, 14, 9
+	if inner < history+working+stashes {
+		history = min(history, (inner+2)/3)
+		stashes = min(stashes, (inner+1)/3)
+		working = min(working, inner-history-stashes)
 	}
-	working := min(14, inner-history)
-	return []modeSegment{{historyMode, 0, history, " History "}, {workingCopyMode, history, history + working, " Working copy "}}
+	return []modeSegment{
+		{historyMode, 0, history, " History "},
+		{workingCopyMode, history, history + working, " Working copy "},
+		{stashesMode, history + working, history + working + stashes, " Stashes "},
+	}
 }
 
 func (m *Model) historyStatusWidth(width int) int {
@@ -382,6 +391,12 @@ func (m *Model) historyStatusWidth(width int) int {
 
 func (m *Model) fetchStatus(c palette.Colors) string {
 	stamp, failure := m.historyRefreshed, m.historyFailure
+	if m.mode == stashesMode {
+		stamp, failure = m.stashes.refreshed, ""
+		if m.stashes.list.err != nil || m.stashes.detail.err != nil {
+			failure = "Stash read incomplete"
+		}
+	}
 	if m.mode == workingCopyMode {
 		stamp, failure = m.statusRefreshed, m.statusFailure
 		if failure == "" {
@@ -457,6 +472,9 @@ func (r listRowLayout) render(content string, selected bool, indicator string, c
 }
 
 func (m *Model) pane(kind string, width, height int, c palette.Colors) string {
+	if m.mode == stashesMode {
+		return m.stashPane(kind, width, height, c)
+	}
 	if m.mode == workingCopyMode {
 		return m.workingCopyPane(kind, width, height, c)
 	}
@@ -586,18 +604,26 @@ func (m *Model) baseView(c palette.Colors) string {
 	if hotkeyBackground == c.Background {
 		hotkeyBackground = c.Active
 	}
-	hints := "↑↓ Navigate   Tab Pane   1/2 View   Ctrl+P Commands   q Quit"
+	hints := "↑↓ Navigate   Tab Pane   1/2/3 View   Ctrl+P Commands   q Quit"
 	if m.mode == workingCopyMode && m.focus == "details" {
 		hints = "↑↓ Scroll   ←→ Pan   Tab List   Esc Back   Ctrl+P Commands"
+	} else if m.mode == stashesMode {
+		hints = "↑↓ Browse   Tab Preview   a Apply   d Delete   1/2/3   Ctrl+P"
+		if m.focus == "details" {
+			hints = "↑↓ Scroll   Tab List   Esc Back   1/2/3 View   Ctrl+P Commands"
+		} else if m.width < 100 {
+			hints = "↑↓ Browse   Enter Preview   a Apply   d Delete   1/2/3   Ctrl+P"
+		}
 	} else if m.width < 100 && m.focus == "history" {
-		hints = "↑↓ Navigate   Enter Details   1/2 View   Ctrl+P Commands"
+		hints = "↑↓ Navigate   Enter Details   1/2/3 View   Ctrl+P Commands"
 	}
 	footer = append(footer, padded(hints, c.Muted, hotkeyBackground))
 	separator := line("", w, c.Text, c.Background, false)
 	return lipgloss.NewStyle().Background(lipgloss.Color(c.Background)).Padding(1, shellHorizontalPadding).Width(m.width).Height(m.height).MaxWidth(m.width).MaxHeight(m.height).Render(header + "\n" + separator + "\n" + panes + "\n" + separator + "\n" + strings.Join(footer, "\n"))
 }
 
-func (m *Model) dialogWidth() int { return max(1, min(84, m.width-2*horizontalPadding)) }
+func (m *Model) dialogWidth() int  { return max(1, min(84, m.width-2*horizontalPadding)) }
+func (m *Model) dialogHeight() int { return max(1, m.height-max(1, m.height/6)-1) }
 
 func errorColor(c palette.Colors) string {
 	if darkSurface(c) {
@@ -682,9 +708,32 @@ func (m *Model) dialogView(c palette.Colors, width, height int) string {
 		title = "Fetch interval (minutes)"
 	case "errors":
 		title = "Errors and warnings"
+	case "stash-note":
+		title = "Stash all"
+	case "stash-apply":
+		title = "Apply stash?"
+	case "stash-delete":
+		title = "Delete stash?"
 	}
 	rows = append(rows, line(title, inner, c.Text, c.Panel, true))
-	if m.dialog == "errors" {
+	if m.dialog == "stash-apply" || m.dialog == "stash-delete" {
+		add(stashSubject(m.confirmedStash))
+		add(stashMetadata(m.confirmedStash))
+		confirm, effect := "Apply", "Restore the saved changes and keep the stash."
+		if m.dialog == "stash-delete" {
+			confirm, effect = "Delete", "Remove the selected stash without applying it."
+		}
+		add(effect)
+		button := func(label string, at int) string {
+			fg, bg, marker := c.Muted, c.Panel, " "
+			if at == m.choice {
+				fg, bg, marker = c.Text, c.Selection, "▎"
+			}
+			return line(marker, 1, c.Accent, bg, false) + line(" "+label+" ", len(label)+2, fg, bg, at == m.choice)
+		}
+		add(button("Cancel", 0) + "  " + button(confirm, 1))
+		add("←→ Choose · Enter Select · Esc Cancel")
+	} else if m.dialog == "errors" {
 		lines := m.errorLines()
 		start := min(m.errorTop, max(0, len(lines)-1))
 		end := min(len(lines), start+max(1, height-6))
@@ -703,6 +752,13 @@ func (m *Model) dialogView(c palette.Colors, width, height int) string {
 		if m.dialog == "max" || m.dialog == "interval" {
 			add("Enter a positive whole number")
 			add("Enter Save · Esc Cancel")
+		} else if m.dialog == "stash-note" {
+			add("Saves staged, unstaged and untracked changes, excluding ignored files")
+			if disabled := m.stashDisabled(true); disabled != "" {
+				add(disabled + " · Esc Cancel")
+			} else {
+				add("Enter Stash · Esc Cancel")
+			}
 		} else {
 			options := m.options()
 			choice := min(m.choice, max(0, len(options)-1))
@@ -758,7 +814,7 @@ func (m *Model) View() tea.View {
 	if m.dialog != "" {
 		w := m.dialogWidth()
 		y := max(1, m.height/6)
-		h := max(1, m.height-y-1)
+		h := m.dialogHeight()
 		modal := m.dialogView(c, w, h)
 		content = lipgloss.NewCompositor(lipgloss.NewLayer(content), lipgloss.NewLayer(modal).X((m.width-w)/2).Y(y).Z(1)).Render()
 	}

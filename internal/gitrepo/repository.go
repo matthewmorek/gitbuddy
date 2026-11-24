@@ -110,6 +110,12 @@ type Repo interface {
 	WorkingCopyDetails(context.Context, string) (WorkingCopyDetails, error)
 	Fetch(context.Context) error
 	Pull(context.Context, PullMode) error
+	SafePull(context.Context, bool) (backupID string, err error)
+	StashAll(context.Context, string) error
+	Stashes(context.Context) ([]Stash, error)
+	StashPreview(context.Context, string) (StashPreview, error)
+	ApplyStash(context.Context, Stash) error
+	DeleteStash(context.Context, Stash) error
 }
 
 type Repository struct{ root, displayName string }
